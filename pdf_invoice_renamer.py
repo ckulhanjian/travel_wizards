@@ -126,6 +126,12 @@ class PDFRenamerGUI:
         self.root.geometry("860x320")
         self.root.resizable(True, True)
         self.root.configure(bg=self.CLR_BG)
+        # Force Windows to respect button colours instead of using the system theme
+        self.root.option_add("*Button.Background", "#e0e0e0")
+        self.root.option_add("*Button.Foreground", "#000000")
+        self.root.option_add("*Button.activeBackground", "#cccccc")
+        self.root.option_add("*Button.activeForeground", "#000000")
+        self.root.option_add("*Button.relief", "flat")
 
         self.source_folder = tk.StringVar()
         self.detected_fmt  = tk.StringVar(value="—")
@@ -166,7 +172,7 @@ class PDFRenamerGUI:
         folder_row.pack(fill="x", pady=(4, 0))
 
         tk.Entry(folder_row, textvariable=self.source_folder,
-                 state="readonly", relief="flat",
+                 relief="flat",
                  bg=self.CLR_PANEL, fg=self.CLR_TEXT,
                  readonlybackground=self.CLR_PANEL,
                  insertbackground=self.CLR_TEXT,
@@ -176,9 +182,9 @@ class PDFRenamerGUI:
         tk.Button(folder_row, text="Browse",
                   command=self.browse_folder,
                   relief="flat", cursor="hand2",
-                  bg=self.CLR_ACCENT, fg=self.CLR_BTN_FG,
-                  activebackground=self.CLR_ACCENT2,
-                  activeforeground=self.CLR_BTN_FG,
+                  bg="#e0e0e0", fg="#000000",
+                  activebackground="#cccccc",
+                  activeforeground="#000000",
                   font=("Arial", 10, "bold"),
                   padx=14, pady=6, bd=0).pack(side="right", padx=6, pady=4)
 
@@ -199,9 +205,9 @@ class PDFRenamerGUI:
             btn_frame, text="▶  PROCESS INVOICES",
             command=self.start_processing,
             relief="flat", cursor="hand2",
-            bg=self.CLR_ACCENT, fg=self.CLR_BTN_FG,
-            activebackground=self.CLR_ACCENT2,
-            activeforeground=self.CLR_BTN_FG,
+            bg="#e0e0e0", fg="#000000",
+            activebackground="#cccccc",
+            activeforeground="#000000",
             font=("Arial", 13, "bold"),
             pady=10, bd=0,
         )
@@ -231,11 +237,10 @@ class PDFRenamerGUI:
 
     def browse_folder(self):
         folder = filedialog.askdirectory(title="Select folder containing PDF invoices")
-        if not folder:
-            return
-        self.source_folder.set(folder)
-        self.detected_fmt.set("auto-detected per file")
-        self.log(f"Selected folder: {folder}")
+        if folder:
+            self.source_folder.set(folder)
+            self.detected_fmt.set("auto-detected per file")
+            self.log(f"Selected folder: {folder}")
 
     def log(self, message):
         self.log_text.insert(tk.END, message + "\n")
@@ -257,7 +262,7 @@ class PDFRenamerGUI:
                 )
                 return
 
-        self.process_btn.config(state="disabled", text="⏳  Processing...", bg="#888888")
+        self.process_btn.config(state="disabled", text="⏳  Processing...", bg="#aaaaaa")
         self.log_text.delete(1.0, tk.END)
 
         thread = threading.Thread(target=self.process_pdfs)
@@ -336,43 +341,29 @@ class PDFRenamerGUI:
             source_path = self.source_folder.get()
             target_path = os.path.join(source_path, "processed_invoices")
 
+            # Create target directory
             if not os.path.exists(target_path):
                 os.makedirs(target_path)
                 self.log(f"Created directory: {target_path}")
 
-            # Collect all PDFs recursively, skipping the output folder.
-            # Normalise both paths so the comparison works on Windows
-            # (tkinter filedialog can return forward-slash paths on Windows).
-            target_norm = os.path.normcase(os.path.normpath(target_path))
-            pdf_files = []
-            for dirpath, dirnames, filenames in os.walk(source_path):
-                dirnames[:] = [
-                    d for d in dirnames
-                    if os.path.normcase(os.path.normpath(os.path.join(dirpath, d)))
-                    != target_norm
-                ]
-                for f in filenames:
-                    if f.lower().endswith(".pdf"):
-                        pdf_files.append(os.path.join(dirpath, f))
+            # Get PDF files — flat list, same folder only (matches original behaviour)
+            pdf_files = [f for f in os.listdir(source_path)
+                         if f.lower().endswith('.pdf')
+                         and os.path.isfile(os.path.join(source_path, f))]
 
             if not pdf_files:
                 self.log("No PDF files found in the selected folder!")
-                self.process_btn.config(state="normal", text="▶  PROCESS INVOICES", bg=PDFRenamerGUI.CLR_BTN_BG)
+                self.process_btn.config(state="normal", text="▶  PROCESS INVOICES", bg="#e0e0e0")
                 return
 
             self.log(f"Found {len(pdf_files)} PDF file(s)")
             successful = failed = 0
 
-            for i, src in enumerate(pdf_files, 1):
-                rel  = os.path.relpath(src, source_path)
-                file = os.path.basename(src)
-                self.log(f"\n[{i}/{len(pdf_files)}] Processing: {rel}")
+            for i, file in enumerate(pdf_files, 1):
+                self.log(f"\n[{i}/{len(pdf_files)}] Processing: {file}")
                 try:
-                    # Mirror the subfolder structure inside processed_invoices/
-                    # so files from different subfolders never collide.
-                    dest_dir = os.path.join(target_path, os.path.dirname(rel))
-                    os.makedirs(dest_dir, exist_ok=True)
-                    dest = os.path.join(dest_dir, file)
+                    src  = os.path.join(source_path, file)
+                    dest = os.path.join(target_path, file)
                     shutil.copy2(src, dest)
 
                     # Extract fields from original before overlay is applied
@@ -399,7 +390,7 @@ class PDFRenamerGUI:
 
                     if invoice_no and last_name:
                         new_name = build_filename(agent, invoice_no, last_name)
-                        new_path = os.path.join(dest_dir, new_name)
+                        new_path = os.path.join(target_path, new_name)
                         os.rename(dest, new_path)
                         self.log(f"  ✓ Renamed to: {new_name}")
                         successful += 1
@@ -433,7 +424,7 @@ class PDFRenamerGUI:
             self.log(f"Fatal error: {e}")
             messagebox.showerror("Error", f"An error occurred: {e}")
         finally:
-            self.process_btn.config(state="normal", text="▶  PROCESS INVOICES", bg=PDFRenamerGUI.CLR_BTN_BG)
+            self.process_btn.config(state="normal", text="▶  PROCESS INVOICES", bg="#e0e0e0")
 
     def run(self):
         self.root.mainloop()
