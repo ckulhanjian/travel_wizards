@@ -91,7 +91,7 @@ def build_filename(agent_initials, invoice_no, last_name):
     Agent is omitted (with its underscore) when not present.
     """
     if agent_initials:
-        return f"{agent_initials}_{invoice_no}_{last_name}.pdf"
+        return f"{invoice_no}_{last_name}_{agent_initials}.pdf"
     else:
         return f"{invoice_no}_{last_name}.pdf"
 
