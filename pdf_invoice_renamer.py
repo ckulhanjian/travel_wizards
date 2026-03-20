@@ -98,8 +98,8 @@ def extract_fields(text, fmt: str):
 
 def build_filename(agent_initials, invoice_no, last_name):
     if agent_initials:
-        return f"{agent_initials}_{invoice_no}_{last_name}.pdf"
-    return f"{invoice_no}_{last_name}.pdf"
+        return f"{invoice_no} {last_name} {agent_initials}.pdf"
+    return f"{invoice_no} {last_name}.pdf"
 
 
 # ---------------------------------------------------------------------------
