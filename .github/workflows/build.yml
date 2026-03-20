@@ -1,0 +1,67 @@
+name: Build TravelWizards.exe
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build — TravelWizards.exe
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: hotel_invoice_processor
+        run: pip install -r requirements.txt
+
+      - name: Build executable
+        working-directory: hotel_invoice_processor
+        run: pyinstaller portal.spec
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TravelWizards-windows
+          path: hotel_invoice_processor/dist/TravelWizards.exe
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TravelWizards-windows
+          path: dist
+
+      - name: Zip the executable
+        run: zip -j dist/TravelWizards.zip dist/TravelWizards.exe
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build ${{ github.run_number }}"
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            **Download:** TravelWizards.zip — unzip and run TravelWizards.exe, no installation required.
+          files: dist/TravelWizards.zip
+          draft: false
+          prerelease: false

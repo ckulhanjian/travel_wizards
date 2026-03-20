@@ -1,0 +1,6 @@
+The following files must be placed in this folder before building:
+  - overlay.pdf                  (Travel Wizards letterhead overlay)
+  - backside.pdf                 (invoice back page)
+  - Hotel_Invoice-Template.xlsx  (hotel invoice template)
+
+These are not committed to the repository.

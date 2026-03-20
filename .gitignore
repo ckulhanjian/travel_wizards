@@ -1,0 +1,25 @@
+# PyInstaller output
+dist/
+build/
+*.spec.bak
+__pycache__/
+*.pyc
+
+# Sensitive assets — add these locally before building
+overlay.pdf
+backside.pdf
+Hotel_Invoice-Template.xlsx
+
+# Test/scratch
+test_batch/
+test_out/
+test_pdf/
+test_rl/
+test_v2/
+processed_invoices/
+final_invoices/
+editor_config.json
+
+# OS
+.DS_Store
+Thumbs.db
