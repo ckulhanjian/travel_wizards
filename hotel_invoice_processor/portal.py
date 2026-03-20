@@ -184,7 +184,7 @@ class InvoicePortal:
 
     def _open_pdf(self):
         try:
-            from v5.invoice_processor import PDFRenamerGUI
+            from invoice_processor import PDFRenamerGUI
             PDFRenamerGUI(parent=self.root)
         except ImportError:
             messagebox.showerror("Not Found",
@@ -192,7 +192,7 @@ class InvoicePortal:
 
     def _open_hotel(self):
         try:
-            from v5.hotel_invoice_processor import HotelInvoiceGUI
+            from hotel_invoice_processor import HotelInvoiceGUI
             HotelInvoiceGUI(parent=self.root)
         except ImportError:
             messagebox.showerror("Not Found",

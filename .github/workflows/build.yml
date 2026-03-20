@@ -27,11 +27,16 @@ jobs:
         working-directory: hotel_invoice_processor
         run: pyinstaller portal.spec
 
+      - name: Zip executable
+        run: |
+          cd hotel_invoice_processor/dist
+          Compress-Archive -Path TravelWizards.exe -DestinationPath TravelWizards.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: TravelWizards-windows
-          path: hotel_invoice_processor/dist/TravelWizards.exe
+          path: hotel_invoice_processor/dist/TravelWizards.zip
           if-no-files-found: error
 
   release:
@@ -50,18 +55,16 @@ jobs:
           name: TravelWizards-windows
           path: dist
 
-      - name: Zip the executable
-        run: zip -j dist/TravelWizards.zip dist/TravelWizards.exe
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: "Build ${{ github.run_number }}"
           body: |
-            Automated build from commit ${{ github.sha }}
+            Automated build — commit ${{ github.sha }}
 
-            **Download:** TravelWizards.zip — unzip and run TravelWizards.exe, no installation required.
+            **Download TravelWizards.zip**, unzip, run `TravelWizards.exe`.
+            No installation required.
           files: dist/TravelWizards.zip
           draft: false
           prerelease: false
