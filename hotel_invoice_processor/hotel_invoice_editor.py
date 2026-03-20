@@ -20,7 +20,7 @@ try:
     import fitz
     from openpyxl import load_workbook
     from openpyxl.styles import Font, Alignment
-    from invoice_pdf import build_pdf
+    from v5.invoice_pdf import build_pdf
 except ImportError as e:
     _r = tk.Tk(); _r.withdraw()
     messagebox.showerror("Missing Dependencies",

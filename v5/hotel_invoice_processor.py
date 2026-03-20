@@ -546,7 +546,7 @@ class HotelInvoiceGUI:
     def _open_editor(self, output_dir=None):
         """Launch the invoice editor in queue mode over all processed invoices."""
         try:
-            from hotel_invoice_editor import InvoiceEditorWindow
+            from v5.hotel_invoice_editor import InvoiceEditorWindow
         except ImportError:
             messagebox.showerror("Editor Not Found",
                                  "hotel_invoice_editor.py must be in the same "
