@@ -5,10 +5,10 @@ build/
 __pycache__/
 *.pyc
 
-# Sensitive assets — add these locally before building
-overlay.pdf
-backside.pdf
-Hotel_Invoice-Template.xlsx
+# Python environments
+.venv/
+venv/
+env/
 
 # Test/scratch
 test_batch/
