@@ -8,15 +8,13 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: hotel_invoice_processor
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Install dependencies
         run: pip install PyMuPDF reportlab pyinstaller Pillow
@@ -28,5 +26,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: InvoicePortal-Windows
-          path: dist/InvoicePortal.exe
+          path: hotel_invoice_processor/dist/InvoicePortal.exe
           retention-days: 30
