@@ -22,29 +22,30 @@ jobs:
         run: pip install PyMuPDF reportlab pyinstaller Pillow
 
       - name: Build executable
-        run: |
-          pyinstaller `
-            --onefile `
-            --windowed `
-            --name InvoicePortal `
-            --add-data "overlay.pdf;." `
-            --add-data "backside.pdf;." `
-            --add-data "invoice_processor.py;." `
-            --add-data "invoice_parser.py;." `
-            --add-data "itin_parser.py;." `
-            --add-data "invoice_generator.py;." `
-            --add-data "airport_lookup.py;." `
-            --add-data "airport_resolver.py;." `
-            --hidden-import=invoice_processor `
-            --hidden-import=invoice_parser `
-            --hidden-import=itin_parser `
-            --hidden-import=invoice_generator `
-            --hidden-import=airport_lookup `
-            --hidden-import=airport_resolver `
-            --hidden-import=reportlab `
-            --hidden-import=reportlab.lib `
-            --hidden-import=reportlab.platypus `
-            portal.py
+        shell: cmd
+        run: >
+          pyinstaller
+          --onefile
+          --windowed
+          --name InvoicePortal
+          --add-data "overlay.pdf;."
+          --add-data "backside.pdf;."
+          --add-data "invoice_processor.py;."
+          --add-data "invoice_parser.py;."
+          --add-data "itin_parser.py;."
+          --add-data "invoice_generator.py;."
+          --add-data "airport_lookup.py;."
+          --add-data "airport_resolver.py;."
+          --hidden-import=invoice_processor
+          --hidden-import=invoice_parser
+          --hidden-import=itin_parser
+          --hidden-import=invoice_generator
+          --hidden-import=airport_lookup
+          --hidden-import=airport_resolver
+          --hidden-import=reportlab
+          --hidden-import=reportlab.lib
+          --hidden-import=reportlab.platypus
+          portal.py
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
