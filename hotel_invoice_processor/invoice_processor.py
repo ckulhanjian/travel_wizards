@@ -49,7 +49,11 @@ def detect_format(text: str):
     return None
 
 
-def extract_fields(text, fmt: str):
+def extract_fields(text, fmt: str, log_fn=None):
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
     if fmt == FOLDER_ITIN:
         inv   = re.search(r'ITIN/INVOICE NO\.\s+(\d+)', text)
         agent = re.search(r'SALES PERSON:\s*(\S+)', text)
@@ -57,12 +61,26 @@ def extract_fields(text, fmt: str):
         invoice_no     = inv.group(1)        if inv   else None
         agent_initials = agent.group(1)[-2:] if agent else None
         last_name      = last.group(1)       if last  else None
+        if not inv:   _log("    [debug] ITIN/INVOICE NO not found")
+        if not agent: _log("    [debug] SALES PERSON not found")
+        if not last:  _log("    [debug] FOR: LASTNAME/ not found")
     else:
         inv   = re.search(r'ITIN NO:\s*(\d+)', text)
-        last  = re.search(r'^\s{0,10}([A-Z]{3,})/', text, re.MULTILINE)
+        last  = re.search(r'^\s*([A-Z]{3,})/', text, re.MULTILINE)
         invoice_no     = inv.group(1)  if inv  else None
         agent_initials = None
         last_name      = last.group(1) if last else None
+        if not inv:
+            _log("    [debug] ITIN NO: not found in text")
+            # Show first 200 chars for debugging
+            _log(f"    [debug] Text starts with: {repr(text[:200])}")
+        if not last:
+            _log("    [debug] LASTNAME/ pattern not found")
+            # Show first 5 lines
+            for line in text.strip().split('\n')[:5]:
+                _log(f"    [debug] line: {repr(line)}")
+
+    _log(f"    [fields] agent={agent_initials} invoice={invoice_no} last={last_name}")
     return agent_initials, invoice_no, last_name
 
 
@@ -183,11 +201,15 @@ class PDFRenamerGUI:
         self.log_text.pack(fill="both", expand=True, padx=1, pady=1)
 
     def browse_folder(self):
-        folder = filedialog.askdirectory(title="Select folder containing PDF invoices")
-        if folder:
-            self.source_folder.set(folder)
-            self.detected_fmt.set("auto-detected per file")
-            self.log(f"Selected folder: {folder}")
+        try:
+            folder = filedialog.askdirectory(title="Select folder containing PDF invoices")
+            if folder:
+                self.source_folder.set(folder)
+                self.detected_fmt.set("auto-detected per file")
+                self.log(f"Selected folder: {folder}")
+        except Exception as e:
+            self.log(f"Browse failed: {e}")
+            self.log("You can type/paste the folder path directly into the box above.")
 
     def log(self, message):
         self.log_text.insert(tk.END, message + "\n")
@@ -275,28 +297,110 @@ class PDFRenamerGUI:
                     src  = os.path.join(source_path, file)
                     dest = os.path.join(target_path, file)
                     shutil.copy2(src, dest)
+
+                    # Read text from original for format detection + field extraction
                     doc  = fitz.open(src)
                     text = doc[0].get_text("text")
                     doc.close()
+
                     fmt = detect_format(text)
                     if not fmt:
                         self.log(f"  ✗ Could not detect format")
                         failed += 1
                         continue
                     self.log(f"  Format: {fmt.upper()}")
-                    agent, invoice_no, last_name = extract_fields(text, fmt)
+
+                    # Extract fields for renaming (works for both formats)
+                    agent, invoice_no, last_name = extract_fields(text, fmt, log_fn=self.log)
+
+                    # Reformat both ITIN and TIPITIN to styled PDF
+                    if fmt == FOLDER_ITIN:
+                        try:
+                            from itin_parser import parse_itin_invoice
+                            from invoice_generator import generate_invoice_pdf
+                            from airport_resolver import check_unknown_airports, prompt_and_save
+                            self.log(f"  Parsing {file} (ITIN)...")
+                            data = parse_itin_invoice(src)
+                            self.log(f"    Parsed: {len(data.get('flights',[]))} flights, "
+                                     f"{len(data.get('passengers',[]))} pax, "
+                                     f"{len(data.get('tickets',[]))} tickets")
+
+                            unknowns = check_unknown_airports(data)
+                            if unknowns:
+                                self.log(f"  ? Unknown airport(s): {', '.join(unknowns)}")
+                                for city in unknowns:
+                                    import queue
+                                    result_q = queue.Queue()
+                                    def _do_prompt_itin(c=city):
+                                        r = prompt_and_save(c, parent=self.root)
+                                        result_q.put(r)
+                                    self.root.after(0, _do_prompt_itin)
+                                    display = result_q.get()
+                                    self.log(f"    > {city} = {display}")
+                                self.log("  ✓ Airport(s) added to lookup")
+
+                            generate_invoice_pdf(data, dest)
+                            self.log("  ✓ Reformatted to new layout")
+                        except Exception as e:
+                            self.log(f"  ✗ Reformat failed ({e}), using original")
+
+                    elif fmt == FOLDER_TIPITIN:
+                        try:
+                            from invoice_parser import parse_invoice
+                            from invoice_generator import generate_invoice_pdf
+                            from airport_resolver import check_unknown_airports, prompt_and_save
+                            self.log(f"  Parsing {file}...")
+                            data = parse_invoice(src)
+                            self.log(f"    Parsed: {len(data.get('flights',[]))} flights, "
+                                     f"{len(data.get('hotels',[]))} hotels, "
+                                     f"{len(data.get('passengers',[]))} pax, "
+                                     f"{len(data.get('tickets',[]))} tickets")
+
+                            # Check for unknown airports — prompt adds to airport_lookup.py
+                            unknowns = check_unknown_airports(data)
+                            if unknowns:
+                                self.log(f"  ? Unknown airport(s): {', '.join(unknowns)}")
+                                for city in unknowns:
+                                    import queue
+                                    result_q = queue.Queue()
+                                    def _do_prompt(c=city):
+                                        r = prompt_and_save(c, parent=self.root)
+                                        result_q.put(r)
+                                    self.root.after(0, _do_prompt)
+                                    display = result_q.get()
+                                    self.log(f"    → {city} = {display}")
+                                self.log("  ✓ Airport(s) added to lookup")
+
+                            generate_invoice_pdf(data, dest)
+                            self.log("  ✓ Reformatted to new layout")
+                        except Exception as e:
+                            self.log(f"  ✗ Reformat failed ({e}), using original")
+
+                    # Apply overlay + back page
+                    self.log(f"  Applying overlay (format: {fmt})...")
                     if self.apply_overlay_and_backside(dest, fmt):
                         self.log("  ✓ Overlay & back page applied")
                     else:
                         self.log("  ✗ Overlay failed, continuing with rename...")
+
+                    # Rename based on extracted fields
                     if invoice_no and last_name:
                         new_name = build_filename(agent, invoice_no, last_name)
                         new_path = os.path.join(target_path, new_name)
+                        # Check if target already exists (duplicate invoice)
+                        if os.path.exists(new_path):
+                            base, ext = os.path.splitext(new_name)
+                            counter = 2
+                            while os.path.exists(os.path.join(target_path, f"{base} ({counter}){ext}")):
+                                counter += 1
+                            new_name = f"{base} ({counter}){ext}"
+                            new_path = os.path.join(target_path, new_name)
+                            self.log(f"  ⚠ Duplicate name — using: {new_name}")
                         os.rename(dest, new_path)
                         self.log(f"  ✓ Renamed to: {new_name}")
                         successful += 1
                     else:
-                        self.log(f"  ✗ Could not extract fields")
+                        self.log(f"  ✗ Could not extract: invoice_no={invoice_no} last_name={last_name}")
                         failed += 1
                 except Exception as e:
                     self.log(f"  ✗ Error: {e}")
