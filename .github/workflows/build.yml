@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: hotel_invoice_processor
+        working-directory: Invoice_Portal
 
     steps:
       - name: Checkout code
@@ -26,5 +26,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: InvoicePortal-Windows
-          path: hotel_invoice_processor/dist/InvoicePortal.exe
+          path: Invoice_Portal/dist/InvoicePortal.exe
           retention-days: 30

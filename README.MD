@@ -9,7 +9,7 @@ Two standalone desktop utilities for invoice processing. Each compiles to a sing
 | Folder | Tool | Description |
 |---|---|---|
 | `invoice_processor/` | **Invoice Processor** | Renames & stamps PDF invoices with overlay + back page |
-| `hotel_invoice_processor/` | **Hotel Invoice Processor** | Generates hotel invoice `.xlsx` files from the Hotels report |
+| `Invoice_Portal/` | **Invoice Portal** | Generates hotel invoice `.xlsx` files from the Hotels report |
 
 ---
 
@@ -34,7 +34,7 @@ travel-wizards-tools/
 │   ├── backside.pdf                ← bundled asset (add to repo)
 │   ├── invoice_processor.spec      ← PyInstaller spec
 │   └── requirements.txt
-├── hotel_invoice_processor/
+├── Invoice_Portal/
 │   ├── hotel_invoice_processor.py  ← main script
 │   ├── Hotel_Invoice-Template.xlsx ← bundled asset (add to repo)
 │   ├── hotel_invoice_processor.spec
@@ -46,7 +46,7 @@ travel-wizards-tools/
 
 ## Adding a New Template (Hotel Invoice)
 
-1. Place the new `.xlsx` template file in `hotel_invoice_processor/`
+1. Place the new `.xlsx` template file in `Invoice_Portal/`
 2. Add it to the `TEMPLATES` dict in `hotel_invoice_processor.py`
 3. Add the filename to the `datas` list in `hotel_invoice_processor.spec`
 4. Commit — the build runs automatically
@@ -61,8 +61,8 @@ cd invoice_processor
 pip install -r requirements.txt
 python invoice_processor.py
 
-# Hotel Invoice Processor
-cd hotel_invoice_processor
+# Invoice Portal
+cd Invoice_Portal
 pip install -r requirements.txt
 python hotel_invoice_processor.py
 ```
@@ -78,8 +78,8 @@ pip install pyinstaller
 cd invoice_processor
 pyinstaller invoice_processor.spec
 
-# Hotel Invoice Processor
-cd hotel_invoice_processor
+# Invoice Portal
+cd Invoice_Portal
 pyinstaller hotel_invoice_processor.spec
 ```
 

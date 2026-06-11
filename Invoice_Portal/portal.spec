@@ -14,7 +14,7 @@ missing  = [f for f in required if not os.path.exists(f)]
 if missing:
     raise SystemExit(f"\n\nBUILD ERROR — missing required asset(s):\n" +
                      "\n".join(f"  {f}" for f in missing) +
-                     "\n\nAdd these files to hotel_invoice_processor/ then retry.\n")
+                     "\n\nAdd these files to Invoice_Portal/ then retry.\n")
 
 fitz_datas,  fitz_binaries,  fitz_hiddenimports  = collect_all("fitz")
 rl_datas,    rl_binaries,    rl_hiddenimports    = collect_all("reportlab")
