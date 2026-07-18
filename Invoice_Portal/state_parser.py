@@ -42,6 +42,7 @@ SKIP_PATTERNS = [
     r'^\s*PAGE:\s*\d+',                 # page numbers
     r'SF-\d+\s+USD',                    # service fee payment ref line
     r'PLEASE NOTE',                     # generic notice prefix
+    r'CANCELLATION FEES APPLY',         # boilerplate cancellation-fee notice — not wanted in output
 ]
 
 # ── Detection helpers ──────────────────────────────────────────
@@ -275,6 +276,16 @@ def parse(pdf_path: str) -> dict:
         # ── Extract data based on current state ───────────────
 
         if state == HEADER and not header_done:
+            # M/M prefix lines are the mailing-address salutation (e.g. "M/M
+            # MIGUEL MORENO"), not a passenger. This MUST be checked before the
+            # generic passenger regex below — "M/M NAME" also matches the
+            # LASTNAME/FIRSTNAME shape ("M" as last name, "/M NAME" as first),
+            # which is what previously caused it to be captured as a third
+            # passenger.
+            if re.match(r'^\s*M/M\s+', line):
+                data["mailing_address"].append(line.strip())
+                continue
+
             # TIPITIN header: passengers at top as LASTNAME/FIRSTNAME
             pax = re.match(r'^\s*([A-Z]+)/([A-Z][A-Z ]+)$', line)
             if pax:
@@ -286,11 +297,6 @@ def parse(pdf_path: str) -> dict:
                     "middle_name": " ".join(parts[1:]) if len(parts) > 1 else "",
                     "full_slash": f"{last}/{first_mid}",
                 })
-                continue
-
-            # Also handle M/M prefix lines (skip, name already captured)
-            if re.match(r'^\s*M/M\s+', line):
-                data["mailing_address"].append(line.strip())
                 continue
 
             # ITIN header: SALES PERSON line
@@ -555,6 +561,38 @@ def parse(pdf_path: str) -> dict:
         elif state == CRUISE and current_cruise:
             # Cruise detail lines
             d = current_cruise["details"]
+
+            # Cruise vendor line: **PRINCESS CRUISES**/CF-MJ8X7W
+            vendor = re.search(r'\*\*(.+?)\*\*', line)
+            if vendor:
+                d["vendor"] = vendor.group(1).strip()
+                cf = re.search(r'CF-(\S+)', line)
+                if cf:
+                    d["confirmation"] = cf.group(1)
+                continue
+
+            # Total cost, e.g. "TOTAL COST   USD  3673.90"
+            tc = re.search(r'TOTAL COST\s+USD\s+([\d.]+)', line)
+            if tc:
+                d["total_cost"] = tc.group(1)
+                continue
+
+            # Payment already applied, e.g. "30JUN2026 PAYMENT BY VISA  USD  3673.90-"
+            pay = re.search(r'(\d{2}[A-Z]{3}(?:\d{2,4})?)\s+PAYMENT BY\s*(.*?)\s+USD\s+([\d.]+)-', line)
+            if pay:
+                d.setdefault("payments", []).append({
+                    "date": pay.group(1), "method": pay.group(2).strip(),
+                    "amount": pay.group(3),
+                })
+                continue
+
+            # Remaining balance, e.g. "BALANCE OF 2899.00 DUE 08JUL2026"
+            bal = re.search(r'BALANCE OF\s+([\d.]+)\s+DUE\s+(\S+)', line)
+            if bal:
+                d["balance_due"] = bal.group(1)
+                d["balance_due_date"] = bal.group(2)
+                continue
+
             for pattern, key in [
                 (r'SHIP NAME:\s*(.+)', "ship"),
                 (r'CABIN NUMBER:\s*(\S+)', "cabin"),
@@ -564,26 +602,12 @@ def parse(pdf_path: str) -> dict:
                 (r'DINING REQUEST:\s*(.+)', "dining"),
                 (r'DEPART DATE\s+(\S+)', "depart_date"),
                 (r'RETURN DATE\s+(\S+)', "return_date"),
-                (r'TOTAL COST\s+USD\s+([\d.]+)', "total_cost"),
-                (r'BALANCE OF\s+([\d.]+)\s+DUE\s+(\S+)', "balance"),
                 (r'ADULT:\s*([\d.]+)\s*X\s*(\d+)', "per_person"),
             ]:
                 m = re.search(pattern, line)
                 if m:
                     d[key] = m.group(1).strip() if m.lastindex == 1 else m.groups()
                     break
-            # Cruise vendor line
-            vendor = re.search(r'\*\*(.+?)\*\*', line)
-            if vendor:
-                d["vendor"] = vendor.group(1).strip()
-                cf = re.search(r'CF-(\S+)', line)
-                if cf:
-                    d["confirmation"] = cf.group(1)
-            # Payment
-            pay = re.search(r'PAYMENT BY\s+(\S+)\s+USD\s+([\d.]+)', line)
-            if pay:
-                d["payment_method"] = pay.group(1)
-                d["payment_amount"] = pay.group(2)
             continue
 
         elif state == TOUR and current_tour:
@@ -599,8 +623,49 @@ def parse(pdf_path: str) -> dict:
                     current_tour["confirmation"] = cf.group(1)
                 continue
 
+            # Total cost of the tour/package, e.g. "TOTAL COST   USD  3649.00"
+            tc = re.search(r'TOTAL COST\s+USD\s+([\d.]+)', line)
+            if tc:
+                current_tour["total_cost"] = tc.group(1)
+                continue
+
+            # Payment already applied, e.g. "12JUN PAYMENT BY VISA  USD  750.00-"
+            # (may or may not name a method between "PAYMENT BY" and the amount)
+            pay = re.search(r'(\d{2}[A-Z]{3})\s+PAYMENT BY\s*(.*?)\s+USD\s+([\d.]+)-', line)
+            if pay:
+                current_tour.setdefault("payments", []).append({
+                    "date": pay.group(1), "method": pay.group(2).strip(),
+                    "amount": pay.group(3),
+                })
+                continue
+
+            # Remaining balance, e.g. "BALANCE OF 2899.00 DUE 08JUL2026" — this is
+            # the authoritative "what's actually still owed" figure.
+            bal = re.search(r'BALANCE OF\s+([\d.]+)\s+DUE\s+(\S+)', line)
+            if bal:
+                current_tour["balance_due"] = bal.group(1)
+                current_tour["balance_due_date"] = bal.group(2)
+                continue
+
+            # "TOTAL DUE: 3649.00 BY 08JUL2026" repeats TOTAL COST under a due date
+            # rather than reflecting payments already made — it's redundant/misleading
+            # next to BALANCE OF, so we only keep the date (as a fallback if there's
+            # no BALANCE OF line) and drop the confusing repeated amount.
+            td = re.search(r'TOTAL DUE:\s*[\d.]+\s+BY\s+(\S+)', line)
+            if td:
+                current_tour.setdefault("balance_due_date", td.group(1))
+                continue
+
+            # "TYPE OF PKG: BACKROADS BELIZE & GUATEMALA MULTI ADVENTURE" — this
+            # describes what the booking actually is (not always "transportation"),
+            # so it's captured as its own field rather than dumped into details.
+            ty = re.search(r'TYPE OF PKG:\s*(.+)', line)
+            if ty:
+                current_tour["type"] = ty.group(1).strip()
+                continue
+
             # Tour detail lines
-            if re.search(r'TOTAL DUE:|PICK UP|DROP OFF|TYPE OF PKG:', line):
+            if re.search(r'PICK UP|DROP OFF', line):
                 current_tour["details"].append(line.strip())
                 continue
 
@@ -612,6 +677,7 @@ def parse(pdf_path: str) -> dict:
 
         elif state == PACKAGE and current_package:
             d = current_package["details"]
+
             vendor = re.search(r'\*\*(.+?)\*\*', line)
             if vendor:
                 d["vendor"] = vendor.group(1).strip()
@@ -622,21 +688,44 @@ def parse(pdf_path: str) -> dict:
                 if cf:
                     d["confirmation"] = cf.group(1)
                 continue
-            for pattern, key in [
-                (r'TOTAL COST\s+USD\s+([\d.]+)', "total_cost"),
-                (r'TYPE OF PKG:\s*(.+)', "type"),
-                (r'TOTAL DUE:\s*([\d.]+)', "total_due"),
-            ]:
-                m = re.search(pattern, line)
-                if m:
-                    d[key] = m.group(1).strip()
-                    break
-            # Payment
-            pay = re.search(r'PAYMENT BY\s+(\S+)\s+USD\s+([\d.]+)', line)
+
+            # Total cost of the package, e.g. "TOTAL COST   USD  5621.38"
+            tc = re.search(r'TOTAL COST\s+USD\s+([\d.]+)', line)
+            if tc:
+                d["total_cost"] = tc.group(1)
+                continue
+
+            # Payment already applied — collected as a list so multiple payments
+            # (e.g. a deposit plus a final payment) don't overwrite each other.
+            pay = re.search(r'(\d{2}[A-Z]{3})\s+PAYMENT BY\s*(.*?)\s+USD\s+([\d.]+)-', line)
             if pay:
-                d["payment_method"] = pay.group(1)
-                d["payment_amount"] = pay.group(2)
-            # Detail lines
+                d.setdefault("payments", []).append({
+                    "date": pay.group(1), "method": pay.group(2).strip(),
+                    "amount": pay.group(3),
+                })
+                continue
+
+            # Remaining balance, e.g. "BALANCE OF 2899.00 DUE 08JUL2026"
+            bal = re.search(r'BALANCE OF\s+([\d.]+)\s+DUE\s+(\S+)', line)
+            if bal:
+                d["balance_due"] = bal.group(1)
+                d["balance_due_date"] = bal.group(2)
+                continue
+
+            # "TOTAL DUE: X BY DATE" repeats TOTAL COST under a due date rather than
+            # reflecting payments made — redundant next to BALANCE OF, so only the
+            # date is kept (as a fallback), and the confusing repeated amount is dropped.
+            td = re.search(r'TOTAL DUE:\s*[\d.]+\s+BY\s+(\S+)', line)
+            if td:
+                d.setdefault("balance_due_date", td.group(1))
+                continue
+
+            ty = re.search(r'TYPE OF PKG:\s*(.+)', line)
+            if ty:
+                d["type"] = ty.group(1).strip()
+                continue
+
+            # Anything else is descriptive text about the package
             stripped = line.strip()
             if stripped:
                 d.setdefault("description", []).append(stripped)

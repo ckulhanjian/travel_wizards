@@ -37,6 +37,7 @@ IATA = {
     "MCO": ("Orlando Intl", "Orlando"),
     "MDW": ("Chicago Midway Intl", "Chicago"),
     "MIA": ("Miami Intl", "Miami"),
+    "MRS": ("Marseille Provence Airport", "Marignane"),
     "MSP": ("Minneapolis-St Paul Intl", "Minneapolis"),
     "MSY": ("Louis Armstrong New Orleans Intl", "New Orleans"),
     "OAK": ("Oakland Intl", "Oakland"),
@@ -162,6 +163,7 @@ IATA = {
 TRUNCATED = {
     # Exact matches (no truncation)
     "DENVER": "DEN",
+    "MARSEILLE": "MRS",
     "VANCOUVER": "YVR",
     "ANCHORAGE": "ANC",
     "BARCELONA": "BCN",

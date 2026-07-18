@@ -8,6 +8,7 @@ No header/footer drawn — overlay.pdf provides branding.
 """
 
 import os
+import re
 import sys
 
 try:
@@ -87,6 +88,46 @@ def _fmt_date(date_raw, day_name):
     year = f"20{parts[2]}" if len(parts[2]) == 2 else parts[2]
     day_str = _tc(day_name) if day_name else ""
     return f"{day_str} {parts[0]} {month} {year}".strip()
+
+
+_MONTH_NAMES = {"JAN":"January","FEB":"February","MAR":"March","APR":"April",
+                "MAY":"May","JUN":"June","JUL":"July","AUG":"August",
+                "SEP":"September","OCT":"October","NOV":"November","DEC":"December"}
+_MONTH_ORDER = {abbr: i + 1 for i, abbr in enumerate(
+    ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"])}
+
+
+def _fmt_short_date(raw, invoice_month=None, invoice_year=None):
+    """
+    Format a 'DDMMM' or 'DDMMMYYYY' date string (e.g. '12JUN' or '08JUL2026')
+    into 'June 12, 2026'.
+
+    Payment lines often have no year ('12JUN PAYMENT BY ...'). When that
+    happens we infer it from the invoice's own month/year: a payment dated
+    later in the calendar than the invoice month is assumed to be from the
+    prior year, since deposits are made before the invoice/final-payment date
+    (e.g. a "04DEC" deposit on a "12 JUN 2026" invoice is December 2025, not 2026).
+    """
+    if not raw:
+        return ""
+    m = re.match(r'(\d{2})([A-Z]{3})(\d{2,4})?$', raw)
+    if not m:
+        return raw
+    day, mon, yr = m.groups()
+    month_name = _MONTH_NAMES.get(mon, mon)
+    if yr:
+        year = f"20{yr}" if len(yr) == 2 else yr
+    elif invoice_year:
+        mon_idx = _MONTH_ORDER.get(mon)
+        if mon_idx and invoice_month and mon_idx > invoice_month:
+            year = str(int(invoice_year) - 1)
+        else:
+            year = invoice_year
+    else:
+        year = None
+    if year:
+        return f"{month_name} {int(day)}, {year}"
+    return f"{month_name} {int(day)}"
 
 
 def generate_invoice_pdf(data: dict, output_path: str):
@@ -277,10 +318,6 @@ def generate_invoice_pdf(data: dict, output_path: str):
             if d.get("itinerary"): right_parts.append(f'<b>Itinerary:</b> {_tc(d["itinerary"])}')
             if d.get("depart_date"): right_parts.append(f'Depart: {d["depart_date"]}')
             if d.get("return_date"): right_parts.append(f'Return: {d["return_date"]}')
-            if d.get("total_cost"): right_parts.append(f'<b>Total Cost:</b> USD {d["total_cost"]}')
-            if d.get("balance"):
-                bal = d["balance"]
-                right_parts.append(f'Balance: {bal[0]} due {bal[1]}' if isinstance(bal, tuple) else f'Balance: {bal}')
             if d.get("confirmation"): right_parts.append(f'Confirmation: {d["confirmation"]}')
 
             grid = Table([[Paragraph("<br/>".join(left_parts), styles["normal"]),
@@ -293,12 +330,15 @@ def generate_invoice_pdf(data: dict, output_path: str):
 
     # ── Tours ─────────────────────────────────────────────────
     if data.get("tours"):
-        story.append(_bar("Tour / Transportation", styles))
-        story.append(Spacer(1, 6))
         for tr in data["tours"]:
             elems = []
             vendor = tr.get("vendor", "Tour")
             date = _fmt_date(tr.get("date_raw"), tr.get("day_name"))
+
+            header_text = _tc(tr["type"]) if tr.get("type") else "Tour / Transportation"
+            story.append(_bar(header_text, styles))
+            story.append(Spacer(1, 6))
+
             elems.append(Paragraph(f'{_tc(vendor)}', styles["route"]))
 
             parts = [f'<b>Date:</b> {date}']
@@ -324,14 +364,13 @@ def generate_invoice_pdf(data: dict, output_path: str):
 
             parts = []
             if d.get("type"): parts.append(f'<b>Type:</b> {d["type"]}')
-            if d.get("total_cost"): parts.append(f'<b>Total Cost:</b> USD {d["total_cost"]}')
             if d.get("amount"): parts.append(f'<b>Amount:</b> USD {d["amount"]}')
             if d.get("confirmation"): parts.append(f'Confirmation: {d["confirmation"]}')
             if parts:
                 elems.append(Paragraph("  |  ".join(parts), styles["detail"]))
 
             for line in d.get("description", []):
-                if not any(kw in line for kw in ["TOTAL COST", "PAYMENT BY", "TYPE OF PKG", "TOTAL DUE"]):
+                if not any(kw in line for kw in ["TOTAL COST", "PAYMENT BY", "TYPE OF PKG", "TOTAL DUE", "BALANCE OF"]):
                     elems.append(Paragraph(line, styles["sub_text"]))
 
             elems.append(Spacer(1, 8))
@@ -367,24 +406,103 @@ def generate_invoice_pdf(data: dict, output_path: str):
         story.append(Spacer(1, 6))
 
     # ── Financial ─────────────────────────────────────────────
+    # This is the single place cost figures appear on the invoice — tours and
+    # packages above show vendor/date/confirmation only, no dollar amounts.
+    # Layout: Total, then one line per payment (each with its date), then
+    # Sub Total (the remaining balance, with its due date if not fully paid).
     fin = data.get("financial", {})
+
+    booking_date_parts = data.get("booking", {}).get("date", "").split()
+    invoice_month = _MONTH_ORDER.get(booking_date_parts[1].upper()) if len(booking_date_parts) >= 2 else None
+    invoice_year = booking_date_parts[2] if len(booking_date_parts) >= 3 else None
+
+    total_cost = None
+    all_payments = []
+    balance_due = None
+    balance_due_date = None
+
+    for tr in data.get("tours", []):
+        if tr.get("total_cost"):
+            total_cost = (total_cost or 0) + float(tr["total_cost"])
+        all_payments.extend(tr.get("payments", []))
+        if tr.get("balance_due") is not None:
+            balance_due = (balance_due or 0) + float(tr["balance_due"])
+        if tr.get("balance_due_date") and not balance_due_date:
+            balance_due_date = tr["balance_due_date"]
+
+    for pk in data.get("packages", []):
+        pd = pk.get("details", {})
+        if pd.get("total_cost"):
+            total_cost = (total_cost or 0) + float(pd["total_cost"])
+        all_payments.extend(pd.get("payments", []))
+        if pd.get("balance_due") is not None:
+            balance_due = (balance_due or 0) + float(pd["balance_due"])
+        if pd.get("balance_due_date") and not balance_due_date:
+            balance_due_date = pd["balance_due_date"]
+
+    for cr in data.get("cruises", []):
+        cd = cr.get("details", {})
+        if cd.get("total_cost"):
+            total_cost = (total_cost or 0) + float(cd["total_cost"])
+        all_payments.extend(cd.get("payments", []))
+        if cd.get("balance_due") is not None:
+            balance_due = (balance_due or 0) + float(cd["balance_due"])
+        if cd.get("balance_due_date") and not balance_due_date:
+            balance_due_date = cd["balance_due_date"]
+
+    payments_sum = sum(float(p["amount"]) for p in all_payments) if all_payments else None
+    if balance_due is None and total_cost is not None and payments_sum is not None:
+        balance_due = total_cost - payments_sum
+
     fin_rows = []
+
+    if total_cost is not None:
+        fin_rows.append(["Total:", f'USD {total_cost:,.2f}'])
+    elif fin.get("total"):
+        fin_rows.append(["Total:", f'USD {fin["total"]}'])
+
     if fin.get("fare_per_person"): fin_rows.append(["Fare:", f'USD {fin["fare_per_person"]}'])
     if fin.get("air_fare"): fin_rows.append(["Air Fare:", f'USD {fin["air_fare"]}'])
     if fin.get("tax_and_fees"): fin_rows.append(["Tax and Carrier Fees:", f'USD {fin["tax_and_fees"]}'])
-    if fin.get("total"): fin_rows.append(["Total:", f'USD {fin["total"]}'])
     if data.get("service_fee"): fin_rows.append(["Service Fee:", f'USD {data["service_fee"]}'])
-    if fin.get("sub_total"): fin_rows.append(["Sub Total:", f'USD {fin["sub_total"]}'])
+
+    for p in all_payments:
+        date_str = _fmt_short_date(p.get("date"), invoice_month, invoice_year)
+        val = f'USD {p["amount"]}'
+        if date_str:
+            val += f'  ({date_str})'
+        fin_rows.append(["Payment:", val])
+
+    if balance_due is not None:
+        paid_in_full = balance_due <= 0
+        if paid_in_full:
+            fin_rows.append(["Sub Total:", "PAID IN FULL"])
+        else:
+            val = f'USD {balance_due:,.2f}'
+            if balance_due_date:
+                val += f'  (Due {_fmt_short_date(balance_due_date, invoice_month, invoice_year)})'
+            fin_rows.append(["Sub Total:", val])
+    elif fin.get("sub_total"):
+        fin_rows.append(["Sub Total:", f'USD {fin["sub_total"]}'])
+
     if fin.get("credit_card_payment"): fin_rows.append(["Credit Card Payment:", f'USD {fin["credit_card_payment"]}'])
-    if fin.get("amount_due") is not None: fin_rows.append(["Amount Due:", f'USD {fin["amount_due"]}'])
+
+    # Only fall back to the raw AMOUNT DUE line if we didn't already compute a
+    # balance above — otherwise it would just repeat the Sub Total we just showed.
+    if balance_due is None and fin.get("amount_due") is not None:
+        try:
+            paid_in_full = float(fin["amount_due"]) <= 0
+        except (ValueError, TypeError):
+            paid_in_full = False
+        fin_rows.append(["Amount Due:", "PAID IN FULL" if paid_in_full else f'USD {fin["amount_due"]}'])
 
     if fin_rows:
         tbl_rows = []
         for label, val in fin_rows:
-            is_due = "Amount Due" in label
-            sl = styles["bold"] if is_due else styles["detail"]
+            is_balance_line = label in ("Sub Total:", "Amount Due:")
+            sl = styles["bold"] if is_balance_line else styles["detail"]
             tbl_rows.append([Paragraph(label, sl), Paragraph(val, sl)])
-        ft = Table(tbl_rows, colWidths=[W*0.55, W*0.25])
+        ft = Table(tbl_rows, colWidths=[W*0.40, W*0.40])
         ft.setStyle(TableStyle([("ALIGN",(1,0),(1,-1),"RIGHT"),
                                 ("TOPPADDING",(0,0),(-1,-1),1),
                                 ("BOTTOMPADDING",(0,0),(-1,-1),1),
