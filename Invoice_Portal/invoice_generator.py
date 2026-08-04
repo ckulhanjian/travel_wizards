@@ -170,10 +170,11 @@ def generate_invoice_pdf(data: dict, output_path: str):
     info.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP")]))
     story.append(info)
 
-    # Mailing address
+    # Mailing address — one line per part (name / street / city, state zip),
+    # like an envelope, rather than run together on a single line.
     if data.get("mailing_address"):
         story.append(Spacer(1, 4))
-        addr = " | ".join(data["mailing_address"])
+        addr = "<br/>".join(data["mailing_address"])
         story.append(Paragraph(f'<font color="#555555">{addr}</font>', styles["sub_text"]))
 
     story.append(Spacer(1, 10))
@@ -540,7 +541,7 @@ def generate_invoice_pdf(data: dict, output_path: str):
     # ── Build ─────────────────────────────────────────────────
     doc = SimpleDocTemplate(output_path, pagesize=letter,
                             leftMargin=36, rightMargin=36,
-                            topMargin=65, bottomMargin=75)
+                            topMargin=100, bottomMargin=75)
     doc.build(story)
     return output_path
 
