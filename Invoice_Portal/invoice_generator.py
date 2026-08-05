@@ -48,6 +48,8 @@ def _styles():
     s["normal"]     = ParagraphStyle("normal", fontName="Helvetica", fontSize=9.5, textColor=CLR_DARK, leading=12)
     s["bold"]       = ParagraphStyle("bold", fontName="Helvetica-Bold", fontSize=9.5, textColor=CLR_DARK, leading=12)
     s["detail"]     = ParagraphStyle("detail", fontName="Helvetica", fontSize=9.5, textColor=CLR_GREY, leading=12)
+    s["contact"]        = ParagraphStyle("contact", fontName="Helvetica", fontSize=13, textColor=CLR_BLACK, leading=15)
+    s["contact_right"]  = ParagraphStyle("contact_right", fontName="Helvetica", fontSize=13, textColor=CLR_BLACK, leading=15, alignment=TA_RIGHT)
     s["detail_b"]   = ParagraphStyle("detail_b", fontName="Helvetica-Bold", fontSize=9.5, textColor=CLR_GREY, leading=12)
     s["sub_label"]  = ParagraphStyle("sub_label", fontName="Helvetica-Bold", fontSize=8.5, textColor=CLR_BLUE_LT, leading=11, spaceBefore=6)
     s["sub_text"]   = ParagraphStyle("sub_text", fontName="Helvetica", fontSize=8.5, textColor=CLR_GREY, leading=11)
@@ -135,6 +137,17 @@ def generate_invoice_pdf(data: dict, output_path: str):
     story = []
     story.append(Spacer(1, 4))
 
+    # ── Contact line (phone / email) ───────────────────────────
+    # Rendered as real content (not baked into the overlay) so it shares the
+    # same font, size, and margins as everything else on the invoice.
+    contact = Table(
+        [[Paragraph("P: 800.446.0046", styles["contact"]),
+          Paragraph("E: INFO@TRAVELWIZARDS.COM", styles["contact_right"])]],
+        colWidths=[W * 0.45, W * 0.55])
+    contact.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP")]))
+    story.append(contact)
+    story.append(Spacer(1, 18))
+
     # ── Passengers + booking ──────────────────────────────────
     pax_lines = []
     for i, p in enumerate(data["passengers"], 1):
@@ -173,7 +186,7 @@ def generate_invoice_pdf(data: dict, output_path: str):
     # Mailing address — one line per part (name / street / city, state zip),
     # like an envelope, rather than run together on a single line.
     if data.get("mailing_address"):
-        story.append(Spacer(1, 4))
+        story.append(Spacer(1, 14))
         addr = "<br/>".join(data["mailing_address"])
         story.append(Paragraph(f'<font color="#555555">{addr}</font>', styles["sub_text"]))
 
