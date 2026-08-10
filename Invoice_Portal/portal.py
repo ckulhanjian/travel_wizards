@@ -68,6 +68,26 @@ def _make_hotel_icon(size=96) -> Image.Image:
     return img
 
 
+def _make_airport_icon(size=96) -> Image.Image:
+    """Simple airplane-in-flight glyph for the Airport Database card."""
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    s = size
+    cx, cy = s * 0.5, s * 0.52
+    # fuselage
+    d.line([(cx - s*0.34, cy + s*0.14), (cx + s*0.34, cy - s*0.14)],
+           fill="#2c3e50", width=int(s*0.07))
+    # wings
+    d.line([(cx - s*0.06, cy - s*0.02), (cx - s*0.30, cy - s*0.28)],
+           fill="#2c3e50", width=int(s*0.05))
+    d.line([(cx + s*0.10, cy - s*0.18), (cx + s*0.30, cy - s*0.02)],
+           fill="#2c3e50", width=int(s*0.05))
+    # tail fin accent
+    d.line([(cx - s*0.30, cy + s*0.16), (cx - s*0.40, cy + s*0.30)],
+           fill="#e67e22", width=int(s*0.05))
+    return img
+
+
 def _load_icon(filename, size, fallback_fn):
     path = _asset(filename)
     try:
@@ -147,35 +167,41 @@ class InvoicePortal:
         self.root.title("Travel Wizards — Invoice Portal")
         self.root.configure(bg=self.BG)
         self.root.resizable(False, False)
-        _center(self.root, 600, 460)
+        _center(self.root, 830, 460)
+        self.main_frame = tk.Frame(self.root, bg=self.BG)
+        self.main_frame.pack(fill="both", expand=True)
+        self.airport_frame = None
         self._build()
 
     def _build(self):
         # Header
-        tk.Label(self.root, text="TRAVEL  WIZARDS",
+        tk.Label(self.main_frame, text="TRAVEL  WIZARDS",
                  font=("Georgia", 28, "bold"),
                  bg=self.BG, fg="#000000").pack(pady=(38, 2))
-        tk.Label(self.root, text="I N V O I C E   P O R T A L",
+        tk.Label(self.main_frame, text="I N V O I C E   P O R T A L",
                  font=("Arial", 11),
                  bg=self.BG, fg="#cc0000").pack()
 
-        tk.Frame(self.root, bg="#cccccc", height=1).pack(
+        tk.Frame(self.main_frame, bg="#cccccc", height=1).pack(
             fill="x", padx=44, pady=(20, 0))
 
         # Cards
-        row = tk.Frame(self.root, bg=self.BG)
+        row = tk.Frame(self.main_frame, bg=self.BG)
         row.pack(expand=True, pady=28)
 
         c_img = _load_icon("customer-review.png", 80, _make_customer_icon)
         h_img = _load_icon("hotel.png",           80, _make_hotel_icon)
+        a_img = _load_icon("airport.png",         80, _make_airport_icon)
 
         PortalCard(row, "Customer\nInvoices", "PDF invoice processor",
                    c_img, self._open_pdf).pack(side="left", padx=20)
         PortalCard(row, "Hotel\nInvoices",    "Hotel invoice processor",
                    h_img, self._open_hotel).pack(side="left", padx=20)
+        PortalCard(row, "Airport\nDatabase",  "View & edit airport lookups",
+                   a_img, self._open_airports).pack(side="left", padx=20)
 
         # Credit
-        cr = tk.Label(self.root,
+        cr = tk.Label(self.main_frame,
                       text="Icons by Flaticon  ·  flaticon.com",
                       font=("Arial", 7), bg=self.BG, fg="#bbbbbb",
                       cursor="hand2")
@@ -197,6 +223,26 @@ class InvoicePortal:
         except ImportError:
             messagebox.showerror("Not Found",
                                  "hotel_invoice_processor.py not found in the same folder.")
+
+    def _open_airports(self):
+        try:
+            from airport_manager import AirportManagerGUI
+        except ImportError:
+            messagebox.showerror("Not Found",
+                                 "airport_manager.py not found in the same folder.")
+            return
+        self.main_frame.pack_forget()
+        _center(self.root, 1000, 640)
+        self.airport_frame = tk.Frame(self.root, bg="#ffffff")
+        self.airport_frame.pack(fill="both", expand=True)
+        AirportManagerGUI(container=self.airport_frame, on_back=self._close_airports)
+
+    def _close_airports(self):
+        if self.airport_frame is not None:
+            self.airport_frame.destroy()
+            self.airport_frame = None
+        _center(self.root, 830, 460)
+        self.main_frame.pack(fill="both", expand=True)
 
     def run(self):
         self.root.mainloop()

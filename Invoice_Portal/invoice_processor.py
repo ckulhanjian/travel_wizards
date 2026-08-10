@@ -120,11 +120,14 @@ class PDFRenamerGUI:
         self.source_folder = tk.StringVar()
         self.detected_fmt  = tk.StringVar(value="—")
         self.processed_files = []  # list of (original_path, processed_path) tuples
+        self.main_frame = tk.Frame(self.root, bg=self.CLR_BG)
+        self.main_frame.pack(fill="both", expand=True)
+        self.airport_frame = None
         self._draw_logo()
         self.setup_ui()
 
     def _draw_logo(self):
-        c = tk.Canvas(self.root, height=74, bg=self.CLR_BG,
+        c = tk.Canvas(self.main_frame, height=74, bg=self.CLR_BG,
                       highlightthickness=0, bd=0)
         c.pack(fill="x", padx=0, pady=0)
         c.create_line(0, 73, 2000, 73, fill=self.CLR_BORDER, width=1)
@@ -134,7 +137,7 @@ class PDFRenamerGUI:
         c.create_text(430, 52, text="M A G I C A L   J O U R N E Y S",
                       font=("Arial", 10), fill="#cc0000", anchor="center")
         if isinstance(self.root, tk.Toplevel):
-            tk.Button(self.root, text="⌂  Home", command=self.root.destroy,
+            tk.Button(self.main_frame, text="⌂  Home", command=self.root.destroy,
                       relief="flat", cursor="hand2",
                       bg=self.CLR_BG, fg="#000000",
                       activebackground=self.CLR_BG,
@@ -143,7 +146,7 @@ class PDFRenamerGUI:
 
         # Airport database — one click from the processor, since this is
         # exactly where "unknown airport" prompts come up while processing.
-        tk.Button(self.root, text="✈  Airports", command=self._open_airports,
+        tk.Button(self.main_frame, text="✈  Airports", command=self._open_airports,
                   relief="flat", cursor="hand2",
                   bg=self.CLR_BG, fg="#000000",
                   activebackground=self.CLR_BG,
@@ -153,13 +156,25 @@ class PDFRenamerGUI:
     def _open_airports(self):
         try:
             from airport_manager import AirportManagerGUI
-            AirportManagerGUI(parent=self.root)
         except ImportError:
             messagebox.showerror("Not Found",
                                  "airport_manager.py not found in the same folder.")
+            return
+        self.main_frame.pack_forget()
+        _center_window(self.root, 1000, 640)
+        self.airport_frame = tk.Frame(self.root, bg="#ffffff")
+        self.airport_frame.pack(fill="both", expand=True)
+        AirportManagerGUI(container=self.airport_frame, on_back=self._close_airports)
+
+    def _close_airports(self):
+        if self.airport_frame is not None:
+            self.airport_frame.destroy()
+            self.airport_frame = None
+        _center_window(self.root, 860, 520)
+        self.main_frame.pack(fill="both", expand=True)
 
     def setup_ui(self):
-        folder_outer = tk.Frame(self.root, bg=self.CLR_BG)
+        folder_outer = tk.Frame(self.main_frame, bg=self.CLR_BG)
         folder_outer.pack(fill="x", padx=24, pady=(18, 4))
         tk.Label(folder_outer, text="INVOICE FOLDER",
                  font=("Arial", 10, "bold"),
@@ -181,7 +196,7 @@ class PDFRenamerGUI:
                   font=("Arial", 10, "bold"),
                   padx=14, pady=6, bd=0).pack(side="right", padx=6, pady=4)
 
-        fmt_row = tk.Frame(self.root, bg=self.CLR_BG)
+        fmt_row = tk.Frame(self.main_frame, bg=self.CLR_BG)
         fmt_row.pack(fill="x", padx=24, pady=(2, 4))
         tk.Label(fmt_row, text="Format:", font=("Arial", 8),
                  bg=self.CLR_BG, fg=self.CLR_MUTED).pack(side="left")
@@ -189,7 +204,7 @@ class PDFRenamerGUI:
                  font=("Arial", 10, "bold"),
                  bg=self.CLR_BG, fg=self.CLR_ACCENT).pack(side="left", padx=6)
 
-        btn_frame = tk.Frame(self.root, bg=self.CLR_BG)
+        btn_frame = tk.Frame(self.main_frame, bg=self.CLR_BG)
         btn_frame.pack(fill="x", padx=24, pady=(8, 8))
         self.process_btn = tk.Button(
             btn_frame, text="▶  PROCESS INVOICES",
@@ -201,13 +216,13 @@ class PDFRenamerGUI:
             pady=10, bd=0)
         self.process_btn.pack(fill="x")
 
-        log_label_row = tk.Frame(self.root, bg=self.CLR_BG)
+        log_label_row = tk.Frame(self.main_frame, bg=self.CLR_BG)
         log_label_row.pack(fill="x", padx=24, pady=(6, 2))
         tk.Label(log_label_row, text="PROGRESS LOG",
                  font=("Arial", 10, "bold"),
                  bg=self.CLR_BG, fg=self.CLR_MUTED).pack(side="left")
 
-        log_outer = tk.Frame(self.root,
+        log_outer = tk.Frame(self.main_frame,
                              highlightbackground=self.CLR_BORDER,
                              highlightthickness=1, bg=self.CLR_BORDER)
         log_outer.pack(fill="both", expand=True, padx=24, pady=(0, 16))
@@ -428,7 +443,7 @@ class PDFRenamerGUI:
 
     def _show_review_button(self):
         """Show a review button in the log area after processing."""
-        review_frame = tk.Frame(self.root, bg=self.CLR_BG)
+        review_frame = tk.Frame(self.main_frame, bg=self.CLR_BG)
         review_frame.pack(fill="x", padx=24, pady=(0, 8))
 
         tk.Button(review_frame, text="📋  REVIEW — Compare Original vs Processed",

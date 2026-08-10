@@ -2,13 +2,22 @@
 airport_lookup.py - Static airport name lookup.
 
 Maps truncated names from old-format invoices and IATA codes to full airport names.
-No API calls. Runs instantly. Add entries as new airports appear in invoices.
+No API calls. Runs instantly.
+
+Built-in airports are bundled in this file (see _BUILTIN_IATA /
+_BUILTIN_TRUNCATED below). Anything added or edited at runtime through the
+app lives in a separate, persistent, writable JSON file instead — see the
+"Persistent, writable overrides layer" section further down for why.
 """
+
+import os
+import sys
+import json
 
 # ── IATA code -> (Full Airport Name, City) ────────────────────
 # Covers major airports Travel Wizards clients would use.
 # Add new codes as they appear in invoices.
-IATA = {
+_BUILTIN_IATA = {
     # North America - US
     "ANC": ("Ted Stevens Anchorage Intl", "Anchorage"),
     "ATL": ("Hartsfield-Jackson Atlanta Intl", "Atlanta"),
@@ -396,7 +405,7 @@ IATA = {
 # ── Truncated name -> IATA code ───────────────────────────────
 # Maps the truncated city names that appear in old-format invoices.
 # Key is UPPERCASE, matched against the raw parsed city name.
-TRUNCATED = {
+_BUILTIN_TRUNCATED = {
     # Exact matches (no truncation)
     "DENVER": "DEN",
     "MARSEILLE": "MRS",
@@ -650,6 +659,128 @@ TRUNCATED = {
     "YEREVAN": "EVN",
     "ZAGREB": "ZAG",
 }
+
+
+# ── Persistent, writable overrides layer ──────────────────────
+#
+# _BUILTIN_IATA / _BUILTIN_TRUNCATED above are the airports bundled with
+# the app. They live inside the packaged executable and are NEVER edited
+# at runtime — in a frozen/PyInstaller build there is no reliable, safe,
+# *persistent* way to rewrite the app's own bundled source at all: it
+# typically gets extracted to a fresh temp folder (e.g. Windows'
+# ...\\Temp\\_MEIxxxxxx\\) on every launch and deleted afterward, so any
+# edit written there is invisible to the next run — even though the
+# write itself can appear to "succeed".
+#
+# Instead, edits/additions from the airport database editor and the
+# "unknown airport" prompt are stored separately, in a small JSON file in
+# a proper per-user, persistent, always-writable location, and merged on
+# top of the bundled defaults every time this module loads.
+def _data_dir() -> str:
+    """A writable, persistent, per-user directory — survives app restarts
+    and reinstalls, unlike a PyInstaller temp extraction folder."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    data_dir = os.path.join(base, "TravelWizards")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except OSError:
+        pass
+    return data_dir
+
+
+def overrides_path() -> str:
+    return os.path.join(_data_dir(), "airport_overrides.json")
+
+
+def _empty_overrides() -> dict:
+    return {"iata_updates": {}, "iata_removed": [],
+            "truncated_updates": {}, "truncated_removed": []}
+
+
+def load_overrides() -> dict:
+    path = overrides_path()
+    if not os.path.exists(path):
+        return _empty_overrides()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return _empty_overrides()
+    empty = _empty_overrides()
+    for key in empty:
+        data.setdefault(key, empty[key])
+    return data
+
+
+def save_overrides(overrides: dict) -> bool:
+    path = overrides_path()
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(overrides, f, indent=2, sort_keys=True, ensure_ascii=False)
+        os.replace(tmp_path, path)
+        return True
+    except OSError:
+        return False
+
+
+def _rebuild_merged_views():
+    """Recompute the live IATA / TRUNCATED dicts: builtins with the
+    persistent overrides layered on top."""
+    global IATA, TRUNCATED
+    ov = load_overrides()
+
+    iata = dict(_BUILTIN_IATA)
+    for code in ov["iata_removed"]:
+        iata.pop(code, None)
+    for code, rec in ov["iata_updates"].items():
+        iata[code] = (rec["name"], rec["city"])
+
+    truncated = dict(_BUILTIN_TRUNCATED)
+    for key in ov["truncated_removed"]:
+        truncated.pop(key, None)
+    truncated.update(ov["truncated_updates"])
+
+    IATA = iata
+    TRUNCATED = truncated
+
+
+def reload_overrides():
+    """Call after writing to the overrides file so this process's IATA /
+    TRUNCATED immediately reflect the change — no module reload, no
+    bytecode cache, nothing that can go stale: it's a plain JSON read."""
+    _rebuild_merged_views()
+
+
+_rebuild_merged_views()
+
+
+def search_airports(query: str, limit: int = 8):
+    """
+    Find existing airports by IATA code, airport name, or city
+    (case-insensitive substring match against the current merged view).
+    Returns up to `limit` (code, name, city) tuples, sorted by name.
+
+    Used by the airport database editor's search box and by the "unknown
+    airport" prompt's "search existing airports" step, so the same
+    airport is never re-added under a second code just because the person
+    processing an invoice didn't recognize a different spelling of a name
+    they'd already added.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    results = []
+    for code, (name, city) in IATA.items():
+        if q in code.lower() or q in name.lower() or q in city.lower():
+            results.append((code, name, city))
+    results.sort(key=lambda r: r[1].lower())
+    return results[:limit]
 
 
 def lookup_airport(city_name: str) -> dict:
