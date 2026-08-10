@@ -141,6 +141,23 @@ class PDFRenamerGUI:
                       font=("Arial", 9, "bold"),
                       padx=10, pady=4, bd=0).place(x=10, y=10)
 
+        # Airport database — one click from the processor, since this is
+        # exactly where "unknown airport" prompts come up while processing.
+        tk.Button(self.root, text="✈  Airports", command=self._open_airports,
+                  relief="flat", cursor="hand2",
+                  bg=self.CLR_BG, fg="#000000",
+                  activebackground=self.CLR_BG,
+                  font=("Arial", 9, "bold"),
+                  padx=10, pady=4, bd=0).place(x=750, y=10)
+
+    def _open_airports(self):
+        try:
+            from airport_manager import AirportManagerGUI
+            AirportManagerGUI(parent=self.root)
+        except ImportError:
+            messagebox.showerror("Not Found",
+                                 "airport_manager.py not found in the same folder.")
+
     def setup_ui(self):
         folder_outer = tk.Frame(self.root, bg=self.CLR_BG)
         folder_outer.pack(fill="x", padx=24, pady=(18, 4))
