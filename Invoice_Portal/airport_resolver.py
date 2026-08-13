@@ -224,7 +224,7 @@ def update_airport_entry(iata_code: str, airport_name: str, city: str, new_code:
     return True
 
 
-def prompt_and_save(truncated_name: str, parent=None, source_pdf=None) -> str:
+def prompt_and_save(truncated_name: str, parent=None, source_pdf=None) -> tuple:
     """
     Show a tkinter dialog for one unknown airport with two ways to
     resolve it:
@@ -236,11 +236,17 @@ def prompt_and_save(truncated_name: str, parent=None, source_pdf=None) -> str:
       - Skip: saves nothing; returns airport_lookup.resolve_city(truncated_name)
         — exactly the fallback the invoice would already show — "the
         existing name listed" — never None.
+
+    Returns (display_string, added_new_airport). added_new_airport is True
+    only for "Add to Lookup" creating a genuinely new entry — False for
+    Skip and for "Link to Selected Airport" (which points at an airport
+    that already existed). Callers that want to report "N airports added"
+    for a batch should sum this flag, not just count non-skip results.
     """
     from tkinter import (Toplevel, Label, Entry, Button, StringVar, Frame,
                           Listbox, messagebox)
 
-    result = {"display": None}
+    result = {"display": None, "added": False}
 
     def _do_link():
         sel = search_list.curselection()
@@ -254,6 +260,7 @@ def prompt_and_save(truncated_name: str, parent=None, source_pdf=None) -> str:
             return
         info = airport_lookup.lookup_airport(truncated_name)
         result["display"] = info["display"] if info else code
+        result["added"] = False  # pointed at an EXISTING airport, not a new one
         dialog.destroy()
 
     def _on_search_write(*_a):
@@ -291,10 +298,12 @@ def prompt_and_save(truncated_name: str, parent=None, source_pdf=None) -> str:
 
         info = airport_lookup.lookup_airport(truncated_name) or airport_lookup.lookup_airport(code)
         result["display"] = info["display"] if info else f"{name}, {city} ({code})"
+        result["added"] = True
         dialog.destroy()
 
     def _skip():
         result["display"] = airport_lookup.resolve_city(truncated_name)
+        result["added"] = False
         dialog.destroy()
 
     if source_pdf:
@@ -395,4 +404,4 @@ def prompt_and_save(truncated_name: str, parent=None, source_pdf=None) -> str:
     dialog.protocol("WM_DELETE_WINDOW", _skip)
 
     dialog.wait_window()
-    return result["display"]
+    return result["display"], result["added"]

@@ -146,7 +146,7 @@ def generate_invoice_pdf(data: dict, output_path: str):
         colWidths=[W * 0.45, W * 0.55])
     contact.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP")]))
     story.append(contact)
-    story.append(Spacer(1, 18))
+    story.append(Spacer(1, 12))
 
     # ── Passengers + booking ──────────────────────────────────
     pax_lines = []
@@ -199,8 +199,8 @@ def generate_invoice_pdf(data: dict, output_path: str):
 
         for fl in data["flights"]:
             elems = []
-            dep = fl.get("departure_city", "")
-            arr = fl.get("arrival_city", "")
+            dep = fl.get("departure_city") or ""
+            arr = fl.get("arrival_city") or ""
             dep_info = lookup_airport(dep)
             arr_info = lookup_airport(arr)
             dep_display = resolve_city(dep)
@@ -209,9 +209,9 @@ def generate_invoice_pdf(data: dict, output_path: str):
             arr_city = arr_info["city"] if arr_info else _tc(arr.split("/")[0])
             elems.append(Paragraph(f"{dep_city} - {arr_city}", styles["route"]))
 
-            carrier = fl.get("airline_locator_carrier", "")
-            fnum = fl.get("flight_number", "")
-            conf = fl.get("airline_locator_code", "")
+            carrier = fl.get("airline_locator_carrier") or ""
+            fnum = fl.get("flight_number") or ""
+            conf = fl.get("airline_locator_code") or ""
             status = "Confirmed" if fl.get("confirmed") else ""
             dep_time = _fmt_time(fl.get("departure_time"))
             arr_time = _fmt_time(fl.get("arrival_time"))
@@ -220,7 +220,13 @@ def generate_invoice_pdf(data: dict, output_path: str):
             if fl.get("arrives_next_day"):
                 arr_date += f" (Arrives {fl['arrives_next_day']})"
 
-            left = f'{carrier} {fnum}<br/>CF# {conf}<br/>{status}'
+            carrier_line = f'{carrier} {fnum}'.strip()
+            left_lines = [carrier_line] if carrier_line else []
+            if conf:
+                left_lines.append(f'CF# {conf}')
+            if status:
+                left_lines.append(status)
+            left = '<br/>'.join(left_lines)
             if fl.get("operated_by"):
                 left += f'<br/>Operated by: {_tc(fl["operated_by"])}'
 
@@ -267,7 +273,49 @@ def generate_invoice_pdf(data: dict, output_path: str):
                 elems.append(Spacer(1, 4))
                 elems.append(pt)
 
+            # Anything the parser captured for this flight but didn't have
+            # a specific field for (e.g. an odd label variant) — shown as
+            # plain text rather than silently dropped.
+            for note in fl.get("notes", []):
+                elems.append(Paragraph(note, styles["sub_text"]))
+
             elems.append(Spacer(1, 10))
+            story.append(KeepTogether(elems))
+
+    # ── Car Rentals ───────────────────────────────────────────
+    if data.get("cars"):
+        story.append(_bar("Car Rental", styles))
+        story.append(Spacer(1, 6))
+        for car in data["cars"]:
+            elems = []
+            elems.append(Paragraph(_tc(car.get("description", "Car Rental")), styles["route"]))
+
+            parts = []
+            if car.get("pickup_date"):
+                pu = f'<b>Pick Up:</b> {car["pickup_date"]}'
+                if car.get("pickup_location"):
+                    pu += f' — {_tc(car["pickup_location"])}'
+                parts.append(pu)
+            if car.get("dropoff_date"):
+                do = f'<b>Drop Off:</b> {car["dropoff_date"]}'
+                if car.get("dropoff_location"):
+                    do += f' — {_tc(car["dropoff_location"])}'
+                parts.append(do)
+            if parts:
+                elems.append(Paragraph("  |  ".join(parts), styles["detail"]))
+
+            parts2 = []
+            if car.get("rate"):
+                parts2.append(f'<b>Rate:</b> USD {car["rate"]}/day')
+            if car.get("confirmation"):
+                parts2.append(f'<b>Confirmation:</b> {car["confirmation"]}')
+            if parts2:
+                elems.append(Paragraph("  |  ".join(parts2), styles["detail"]))
+
+            for note in car.get("details", []):
+                elems.append(Paragraph(note, styles["sub_text"]))
+
+            elems.append(Spacer(1, 8))
             story.append(KeepTogether(elems))
 
     # ── Hotels ────────────────────────────────────────────────
@@ -346,7 +394,7 @@ def generate_invoice_pdf(data: dict, output_path: str):
     if data.get("tours"):
         for tr in data["tours"]:
             elems = []
-            vendor = tr.get("vendor", "Tour")
+            vendor = tr.get("vendor") or "Tour"
             date = _fmt_date(tr.get("date_raw"), tr.get("day_name"))
 
             header_text = _tc(tr["type"]) if tr.get("type") else "Tour / Transportation"
@@ -554,7 +602,7 @@ def generate_invoice_pdf(data: dict, output_path: str):
     # ── Build ─────────────────────────────────────────────────
     doc = SimpleDocTemplate(output_path, pagesize=letter,
                             leftMargin=36, rightMargin=36,
-                            topMargin=100, bottomMargin=75)
+                            topMargin=117, bottomMargin=75)
     doc.build(story)
     return output_path
 

@@ -16,6 +16,7 @@ import fitz
 HEADER       = "HEADER"
 PASSENGERS   = "PASSENGERS"
 FLIGHT       = "FLIGHT"
+CAR          = "CAR"
 HOTEL        = "HOTEL"
 CRUISE       = "CRUISE"
 TOUR         = "TOUR"
@@ -43,6 +44,7 @@ SKIP_PATTERNS = [
     r'SF-\d+\s+USD',                    # service fee payment ref line
     r'PLEASE NOTE',                     # generic notice prefix
     r'CANCELLATION FEES APPLY',         # boilerplate cancellation-fee notice — not wanted in output
+    r'EMBARGO - FOR BAGGAGE',           # lead-in sentence for a baggage-policy URL (already skipped separately)
 ]
 
 # ── Detection helpers ──────────────────────────────────────────
@@ -59,8 +61,10 @@ def _is_tipitin_airline(line):
     return None
 
 def _is_itin_airline(line):
-    """Match: '  AIR   KLM            FLT: 605   COACH CLASS  MEAL'"""
-    m = re.match(r'\s+AIR\s+(\S+)\s+FLT:\s*(\d+)\s+(.+?)$', line)
+    """Match: '  AIR   KLM            FLT: 605   COACH CLASS  MEAL'
+       Airline name may be multiple words ('AIR FRANCE', 'AIR CANADA') —
+       matched lazily up to 'FLT:' rather than assuming a single token."""
+    m = re.match(r'\s+AIR\s+(.+?)\s+FLT:\s*(\d+)\s+(.+?)$', line)
     return m.groups() if m else None
 
 def _is_hotel_line(line):
@@ -68,6 +72,13 @@ def _is_hotel_line(line):
        or:    '  HOTEL AVENIDA PALACE 01 NT/S - OUT 02JUN CONFIRMED'
        or:    '  HOTEL INDIGO DENVER DOWN 03 NT/S - OUT 22JUL CONFIRMED'"""
     m = re.match(r'\s*(.+?)\s+(\d+)\s+NT/S\s*-\s*OUT\s+(\S+)\s+(CONFIRMED|WAITLIST)', line)
+    return m.groups() if m else None
+
+def _is_hotel_line_alt(line):
+    """Match a second, ITIN-style hotel format with no CONFIRMED/WAITLIST
+    suffix and both check-in and check-out dates on the same line:
+    '  HOTEL WINE AND BOOKS HOTE 01 NT/S IN-22OCT OUT-23OCT'"""
+    m = re.match(r'\s*HOTEL\s+(.+?)\s+(\d+)\s+NT/S\s+IN-(\S+)\s+OUT-(\S+)', line)
     return m.groups() if m else None
 
 def _should_skip(line):
@@ -102,6 +113,7 @@ def parse(pdf_path: str) -> dict:
         "mailing_address": [],
         "booking": {},
         "flights": [],
+        "cars": [],
         "hotels": [],
         "cruises": [],
         "tours": [],
@@ -122,6 +134,7 @@ def parse(pdf_path: str) -> dict:
     current_date = None
     current_day = None
     current_flight = None
+    current_car = None
     current_hotel = None
     current_cruise = None
     current_tour = None
@@ -133,6 +146,22 @@ def parse(pdf_path: str) -> dict:
 
         # Skip intentionally ignored lines
         if _should_skip(line):
+            continue
+
+        # ── Universal notices — intercepted before any state-specific
+        # logic, so a boilerplate line can never get mistaken for section
+        # content (e.g. an empty TOUR block grabbing "FOR EMERGENCY
+        # ASSISTANCE..." as its vendor name). Anchored to require the
+        # ENTIRE line to be "** ... **" — a genuine embedded vendor marker
+        # like "14OCT/**BACKROADS**/AMT-3649.00/CF-3436299" never starts
+        # the line with **, so this can't collide with that.
+        full_notice = re.match(r'^\s*\*\*\s*(.+?)\s*\*\*\s*$', line)
+        if full_notice:
+            text = full_notice.group(1).strip()
+            if text and text not in data["notices"] and len(text) > 5:
+                data["notices"].append(text)
+            continue
+        if re.search(r'AFTER HOURS|EMERGENCY', line):
             continue
 
         # ── Check for state transitions ───────────────────────
@@ -154,6 +183,13 @@ def parse(pdf_path: str) -> dict:
                 current_tour = {"date_raw": current_date, "day_name": current_day,
                                 "vendor": None, "amount": None, "confirmation": None,
                                 "details": []}
+            elif "CRUISE" in rest:
+                # e.g. "23 OCT 26 - FRIDAY CRUISE CRUISE" — some invoices
+                # trigger a cruise this way instead of a "CRUISE
+                # ARRANGEMENTS" block.
+                state = CRUISE
+                current_cruise = {"date_raw": current_date, "day_name": current_day,
+                                  "details": {}}
             continue
 
         # Cruise arrangements
@@ -161,6 +197,24 @@ def parse(pdf_path: str) -> dict:
             state = CRUISE
             current_cruise = {"date_raw": current_date, "day_name": current_day,
                               "details": {}}
+            continue
+
+        # Car rental line — embedded within a day's bookings alongside
+        # flights, not its own date-triggered section, e.g.
+        # "CAR RALEIGH/DURHAM HERTZ 1 INTERMED 2/4 DR". Previously there was
+        # no CAR state at all, so every line of a car rental (pickup/dropoff,
+        # rate, confirmation) fell through unrecognized.
+        car_desc = re.match(r'\s*CAR\s+(\S.*)$', line)
+        if car_desc:
+            if current_flight:
+                data["flights"].append(current_flight)
+                current_flight = None
+            if current_car:
+                data["cars"].append(current_car)
+            current_car = {"date_raw": current_date, "day_name": current_day,
+                           "description": car_desc.group(1).strip(),
+                           "details": []}
+            state = CAR
             continue
 
         # Package arrangements
@@ -186,6 +240,9 @@ def parse(pdf_path: str) -> dict:
         if tipitin_air:
             if current_flight:
                 data["flights"].append(current_flight)
+            if current_car:
+                data["cars"].append(current_car)
+                current_car = None
             airline, fnum, cabin = tipitin_air
             current_flight = {
                 "date_raw": current_date, "day_name": current_day,
@@ -209,6 +266,9 @@ def parse(pdf_path: str) -> dict:
         if itin_air:
             if current_flight:
                 data["flights"].append(current_flight)
+            if current_car:
+                data["cars"].append(current_car)
+                current_car = None
             airline, fnum, cabin_meal = itin_air
             # Split cabin and meal
             parts = re.match(r'(.+?)\s{2,}(\S+)$', cabin_meal)
@@ -233,13 +293,22 @@ def parse(pdf_path: str) -> dict:
 
         # Hotel line
         hotel_match = _is_hotel_line(line)
-        if hotel_match:
+        hotel_match_alt = None if hotel_match else _is_hotel_line_alt(line)
+        if hotel_match or hotel_match_alt:
             if current_hotel:
                 data["hotels"].append(current_hotel)
-            chain, nights, checkout, status = hotel_match
+            if current_car:
+                data["cars"].append(current_car)
+                current_car = None
+            if hotel_match:
+                chain, nights, checkout, status = hotel_match
+                checkin = None
+            else:
+                chain, nights, checkin, checkout = hotel_match_alt
+                status = None
             current_hotel = {
                 "chain": chain.strip(), "nights": int(nights),
-                "checkout_date": checkout, "status": status,
+                "checkin_date": checkin, "checkout_date": checkout, "status": status,
                 "name": None, "address": None, "city": None,
                 "phone": None, "fax": None, "rate_currency": None,
                 "rate_amount": None, "confirmation": None,
@@ -255,6 +324,9 @@ def parse(pdf_path: str) -> dict:
             if current_flight:
                 data["flights"].append(current_flight)
                 current_flight = None
+            if current_car:
+                data["cars"].append(current_car)
+                current_car = None
             state = TICKETS
             continue
 
@@ -286,8 +358,13 @@ def parse(pdf_path: str) -> dict:
                 data["mailing_address"].append(line.strip())
                 continue
 
-            # TIPITIN header: passengers at top as LASTNAME/FIRSTNAME
-            pax = re.match(r'^\s*([A-Z]+)/([A-Z][A-Z ]+)$', line)
+            # TIPITIN header: passengers at top as LASTNAME/FIRSTNAME.
+            # Last name may include a suffix word (JR, SR, II, III, IV) or a
+            # short second word — "LIN JR/RICHARD HOWN DUH" must match in
+            # full, not just match "LIN" and silently fail (which used to
+            # send the whole line into mailing_address instead, and drop the
+            # passenger entirely).
+            pax = re.match(r'^\s*([A-Z]+(?:\s[A-Z]+)?)/([A-Z][A-Z ]+)$', line)
             if pax:
                 last, first_mid = pax.group(1), pax.group(2).strip()
                 parts = first_mid.split()
@@ -334,8 +411,9 @@ def parse(pdf_path: str) -> dict:
                 state = HEADER  # stay in header, collecting address
                 continue
 
-            # FOR: passenger block (ITIN format)
-            pax_for = re.match(r'\s*(?:FOR:\s*)?([A-Z]+)/([A-Z][A-Z ]+)$', line)
+            # FOR: passenger block (ITIN format) — same suffix/two-word
+            # last-name allowance as the TIPITIN passenger regex above.
+            pax_for = re.match(r'\s*(?:FOR:\s*)?([A-Z]+(?:\s[A-Z]+)?)/([A-Z][A-Z ]+)$', line)
             if pax_for and "FOR:" in line or (data["passengers"] and re.match(r'\s+[A-Z]+/[A-Z]', line)):
                 last, first_mid = pax_for.group(1), pax_for.group(2).strip()
                 parts = first_mid.split()
@@ -354,8 +432,10 @@ def parse(pdf_path: str) -> dict:
                 continue
 
         elif state == FLIGHT and current_flight:
-            # Departure
-            dep = re.search(r'LV:\s+(.+?)\s{2,}(\d+[AP])', line)
+            # Departure — spacing before the time varies by invoice (single
+            # vs double space); the lazy .+? backtracks correctly either way
+            # since it keeps expanding until it finds a real time-like suffix.
+            dep = re.search(r'LV:\s+(.+?)\s+(\d+[AP])', line)
             if dep:
                 current_flight["departure_city"] = dep.group(1).strip()
                 current_flight["departure_time"] = dep.group(2)
@@ -366,7 +446,7 @@ def parse(pdf_path: str) -> dict:
                 continue
 
             # Arrival (TIPITIN: ARR:, ITIN: AR:)
-            arr = re.search(r'AR[R]?:\s+(.+?)\s{2,}(\d+[AP])', line)
+            arr = re.search(r'AR[R]?:\s+(.+?)\s+(\d+[AP])', line)
             if arr:
                 current_flight["arrival_city"] = arr.group(1).strip()
                 current_flight["arrival_time"] = arr.group(2)
@@ -485,6 +565,53 @@ def parse(pdf_path: str) -> dict:
                 state = NOTICES  # usually followed by notices
                 continue
 
+            # Generic catch-all: anything else encountered while inside a
+            # recognized flight block (e.g. a bare "AIRLINE CONFIRMATION:"
+            # line with no value after it) is kept as a short flight note
+            # rather than lost. Skips lines that are clearly just a
+            # label with nothing after it (nothing worth keeping).
+            stripped = line.strip()
+            if stripped and not re.match(r'^[A-Z ]+:$', stripped):
+                current_flight.setdefault("notes", []).append(stripped)
+                continue
+
+        elif state == CAR and current_car:
+            # Pickup — "PICK UP-20AUG RALEIGH-DURHAM INTL AP"
+            pu = re.match(r'\s*PICK UP-(\S+)\s+(.+)$', line)
+            if pu:
+                current_car["pickup_date"] = pu.group(1)
+                current_car["pickup_location"] = pu.group(2).strip()
+                continue
+
+            # Dropoff — "DROP-22AUG" (location isn't always repeated)
+            do = re.match(r'\s*DROP-(\S+)\s*(.*)$', line)
+            if do:
+                current_car["dropoff_date"] = do.group(1)
+                if do.group(2).strip():
+                    current_car["dropoff_location"] = do.group(2).strip()
+                continue
+
+            # Rate — "RATE- 49.52 WEEKEND GUARANTEED EXTRA DAY-49.52"
+            rt = re.search(r'RATE-\s*([\d.]+)', line)
+            if rt:
+                current_car["rate"] = rt.group(1)
+                continue
+
+            # Confirmation — "CONFIRMATION-L673EAD06B9 GOLD"
+            cf = re.match(r'\s*CONFIRMATION-(\S+)\s*(.*)$', line)
+            if cf:
+                current_car["confirmation"] = cf.group(1)
+                continue
+
+            # Generic catch-all — mileage terms, insurance notes, anything
+            # else describing the rental gets kept as a detail line rather
+            # than lost, matching the same "capture everything, label what
+            # we confidently can" approach used for TOUR.
+            stripped = line.strip()
+            if stripped:
+                current_car["details"].append(stripped)
+                continue
+
         elif state == HOTEL and current_hotel:
             # Hotel name + guarantee
             nm = re.search(r'^\s*(.+?)\s{2,}GUARANTEE-(.+?)$', line)
@@ -499,6 +626,14 @@ def parse(pdf_path: str) -> dict:
                 current_hotel["address"] = addr_rate.group(1).strip()
                 current_hotel["rate_currency"] = addr_rate.group(2)
                 current_hotel["rate_amount"] = addr_rate.group(3)
+                continue
+
+            # Address + rate (amount then currency, e.g. "RATE- 383.00EUR PER NIGHT")
+            addr_rate_alt = re.search(r'^\s+(.+?)\s+RATE-\s*([\d.]+)([A-Z]{3})\s+PER NIGHT', line)
+            if addr_rate_alt:
+                current_hotel["address"] = addr_rate_alt.group(1).strip()
+                current_hotel["rate_amount"] = addr_rate_alt.group(2)
+                current_hotel["rate_currency"] = addr_rate_alt.group(3)
                 continue
 
             # Simple address line (hotels without chain prefix)
@@ -522,6 +657,17 @@ def parse(pdf_path: str) -> dict:
             if phone or fax:
                 continue
 
+            # Phone/fax without the "NO-" wording, e.g. "PHONE 351-222-443750
+            # HOTEL FAX-351-222-443750"
+            phone_alt = re.search(r'(?<!HOTEL )PHONE\s+([\d\-+ ]+?)(?:\s{2,}|\s+HOTEL FAX|$)', line)
+            fax_alt = re.search(r'FAX-([\d\-+ ]+)', line)
+            if phone_alt and not current_hotel.get("phone"):
+                current_hotel["phone"] = phone_alt.group(1).strip()
+            if fax_alt and not current_hotel.get("fax"):
+                current_hotel["fax"] = fax_alt.group(1).strip()
+            if phone_alt or fax_alt:
+                continue
+
             # Phone number without PHONE NO- prefix (e.g. Kurzrock "351 213 218 100")
             simple_phone = re.match(r'^\s+(\d[\d\s-]+\d)\s{2,}RATE', line)
             if simple_phone:
@@ -536,6 +682,13 @@ def parse(pdf_path: str) -> dict:
             cf = re.search(r'CONFIRMATION-(\S+)', line)
             if cf:
                 current_hotel["confirmation"] = cf.group(1)
+                continue
+
+            # Confirmation, alternate abbreviated label seen in some invoices
+            # ("CONF0-47725SG002999" instead of "CONFIRMATION-...")
+            cf_alt = re.match(r'\s*CONF[O0]?-(\S+)', line)
+            if cf_alt and not current_hotel.get("confirmation"):
+                current_hotel["confirmation"] = cf_alt.group(1)
                 continue
 
             # Approx total
@@ -558,6 +711,16 @@ def parse(pdf_path: str) -> dict:
             if re.search(r'RATESTATUS', line):
                 continue
 
+            # Generic catch-all — anything else inside a recognized HOTEL
+            # block (brand/marketing line, extra address line, unusual
+            # cancellation wording, etc.) is kept as a note rather than
+            # lost, the same "capture everything, label what we confidently
+            # can" approach used for TOUR and CAR.
+            stripped = line.strip()
+            if stripped:
+                current_hotel["notes"].append(stripped)
+                continue
+
         elif state == CRUISE and current_cruise:
             # Cruise detail lines
             d = current_cruise["details"]
@@ -571,8 +734,12 @@ def parse(pdf_path: str) -> dict:
                     d["confirmation"] = cf.group(1)
                 continue
 
-            # Total cost, e.g. "TOTAL COST   USD  3673.90"
+            # Total cost — TIPITIN style ("TOTAL COST USD 3673.90") or
+            # dot-filled with no currency prefix ("TOTAL COST OF CRUISE.....
+            # 10896.00")
             tc = re.search(r'TOTAL COST\s+USD\s+([\d.]+)', line)
+            if not tc:
+                tc = re.search(r'TOTAL COST(?:\s+OF\s+\S+)?\.{2,}\s*([\d.]+)', line)
             if tc:
                 d["total_cost"] = tc.group(1)
                 continue
@@ -586,6 +753,16 @@ def parse(pdf_path: str) -> dict:
                 })
                 continue
 
+            # ITIN-style payment with no date and no "USD" —
+            # "CREDIT CARD TO PROVIDER 10896.00-"
+            pay2 = re.search(r'CREDIT CARD TO PROVIDER\s+([\d.]+)-', line)
+            if pay2:
+                d.setdefault("payments", []).append({
+                    "date": None, "method": "Credit Card",
+                    "amount": pay2.group(1),
+                })
+                continue
+
             # Remaining balance, e.g. "BALANCE OF 2899.00 DUE 08JUL2026"
             bal = re.search(r'BALANCE OF\s+([\d.]+)\s+DUE\s+(\S+)', line)
             if bal:
@@ -593,22 +770,45 @@ def parse(pdf_path: str) -> dict:
                 d["balance_due_date"] = bal.group(2)
                 continue
 
+            matched_field = False
             for pattern, key in [
                 (r'SHIP NAME:\s*(.+)', "ship"),
+                (r'SHIP\s*:\s*(.+)', "ship"),
                 (r'CABIN NUMBER:\s*(\S+)', "cabin"),
+                (r'CABIN:\s*(\S+)', "cabin"),
                 (r'DECK:\s*(\S*)', "deck"),
                 (r'DEPARTURE PORT:\s*(.+)', "port"),
+                (r'PORT\s*:\s*(.+?)(?:\s{2,}|$)', "port"),
                 (r'ITINERARY NAME:\s*(.+)', "itinerary"),
                 (r'DINING REQUEST:\s*(.+)', "dining"),
+                (r'SEATING:\s*(.+)', "dining"),
                 (r'DEPART DATE\s+(\S+)', "depart_date"),
+                (r'SAIL DATE\s*:\s*(\S+)', "depart_date"),
                 (r'RETURN DATE\s+(\S+)', "return_date"),
+                (r'RETURN\s*:\s*(\S+)', "return_date"),
                 (r'ADULT:\s*([\d.]+)\s*X\s*(\d+)', "per_person"),
             ]:
                 m = re.search(pattern, line)
                 if m:
                     d[key] = m.group(1).strip() if m.lastindex == 1 else m.groups()
+                    matched_field = True
                     break
-            continue
+            if matched_field:
+                continue
+
+            # A cruise line/vendor name with no ** markers at all, e.g.
+            # "VIKING CRUISE LINE" as the first line after the trigger —
+            # same markerless-vendor fallback used for TOUR/CAR, guarded
+            # the same way against bare numbers and financial lines.
+            stripped = line.strip()
+            if stripped:
+                looks_like_title = (re.match(r'^[A-Za-z]', stripped)
+                                     and not stripped.upper().startswith("FARE"))
+                if not d.get("vendor") and looks_like_title:
+                    d["vendor"] = stripped
+                else:
+                    d.setdefault("notes", []).append(stripped)
+                continue
 
         elif state == TOUR and current_tour:
             # Tour vendor line: **POSITANO CAR SERVICE**/AMT-550.00/CF-GAETA
@@ -623,8 +823,12 @@ def parse(pdf_path: str) -> dict:
                     current_tour["confirmation"] = cf.group(1)
                 continue
 
-            # Total cost of the tour/package, e.g. "TOTAL COST   USD  3649.00"
+            # Total cost of the tour/package — TIPITIN style ("TOTAL COST
+            # USD 3649.00") or ITIN style, dot-filled with no currency
+            # prefix ("TOTAL COST OF TOUR.............. 503.47").
             tc = re.search(r'TOTAL COST\s+USD\s+([\d.]+)', line)
+            if not tc:
+                tc = re.search(r'TOTAL COST(?:\s+OF\s+\S+)?\.{2,}\s*([\d.]+)', line)
             if tc:
                 current_tour["total_cost"] = tc.group(1)
                 continue
@@ -636,6 +840,16 @@ def parse(pdf_path: str) -> dict:
                 current_tour.setdefault("payments", []).append({
                     "date": pay.group(1), "method": pay.group(2).strip(),
                     "amount": pay.group(3),
+                })
+                continue
+
+            # ITIN-style payment with no date and no "USD" —
+            # "CREDIT CARD TO PROVIDER 503.47-"
+            pay2 = re.search(r'CREDIT CARD TO PROVIDER\s+([\d.]+)-', line)
+            if pay2:
+                current_tour.setdefault("payments", []).append({
+                    "date": None, "method": "Credit Card",
+                    "amount": pay2.group(1),
                 })
                 continue
 
@@ -669,10 +883,27 @@ def parse(pdf_path: str) -> dict:
                 current_tour["details"].append(line.strip())
                 continue
 
-            # Generic detail continuation
             stripped = line.strip()
-            if stripped and current_tour.get("vendor"):
-                current_tour["details"].append(stripped)
+
+            # Some ITIN-format tours (car rentals in particular) have no
+            # **VENDOR** marker at all — just plain descriptive text right
+            # after the date, e.g. "AUTO EUROPE FOR SIXT". If nothing
+            # structured has matched and we don't have a vendor yet, treat
+            # the first PLAUSIBLE-LOOKING line as the vendor/description
+            # (must start with a letter and not be a FARE breakdown line —
+            # otherwise a stray total like "2568.81" or a "FARE.....1392.90"
+            # line would become the displayed tour title). Anything that
+            # doesn't qualify — or arrives after a vendor is already set —
+            # still gets captured, just as a detail line instead, so
+            # nothing from inside a recognized TOUR block is ever silently
+            # dropped, even if we can't confidently label it.
+            if stripped:
+                looks_like_title = (re.match(r'^[A-Za-z]', stripped)
+                                     and not stripped.upper().startswith("FARE"))
+                if not current_tour.get("vendor") and looks_like_title:
+                    current_tour["vendor"] = stripped
+                else:
+                    current_tour["details"].append(stripped)
                 continue
 
         elif state == PACKAGE and current_package:
@@ -733,7 +964,13 @@ def parse(pdf_path: str) -> dict:
 
         elif state == TICKETS:
             # TIPITIN: WHEELER/JOHN DANIEL  0167484690269  VIC CARD  USD  612.03
-            tkt = re.search(r'([A-Z]+/[A-Z ]+?)\s{2,}(\d{10,}(?:-\d+)?)\s*(\S+\s*\S*)\s+USD\s+([\d.]+)', line)
+            # Last name may include a suffix word (JR, SR, II, III, IV) —
+            # without allowing that, "LIN JR/RICHARD..." would only match
+            # starting at "JR/...", silently dropping "LIN" from the name.
+            # Spacing before the ticket number varies by invoice — some use
+            # column-aligned double spaces, others just one — so \s+ (not
+            # \s{2,}) is used here specifically.
+            tkt = re.search(r'([A-Z]+(?:\s[A-Z]+)?/[A-Z ]+?)\s+(\d{10,}(?:-\d+)?)\s*(\S+\s*\S*)\s+USD\s+([\d.]+)', line)
             if tkt:
                 data["tickets"].append({
                     "passenger": tkt.group(1).strip(),
@@ -790,7 +1027,7 @@ def parse(pdf_path: str) -> dict:
             continue
 
         elif state == BAGGAGE:
-            route = re.match(r'\s*([A-Z]{2} [A-Z]{3,6})\s+(\d+PC)', line)
+            route = re.match(r'\s*([A-Z0-9]{2} [A-Z]{3,6})\s+(\d+PC)', line)
             if route:
                 data["baggage"].append({
                     "route": route.group(1), "count": route.group(2), "bags": []
@@ -804,7 +1041,7 @@ def parse(pdf_path: str) -> dict:
                 continue
 
         elif state == CARRY_ON:
-            route = re.match(r'\s*([A-Z]{2} [A-Z]{3,6})\s+(\d+PC)', line)
+            route = re.match(r'\s*([A-Z0-9]{2} [A-Z]{3,6})\s+(\d+PC)', line)
             if route:
                 data["carry_on"].append({
                     "route": route.group(1), "count": route.group(2), "bags": []
@@ -863,10 +1100,6 @@ def parse(pdf_path: str) -> dict:
             data["insurance"].append(line.strip())
             continue
 
-        # After hours / emergency
-        if re.search(r'AFTER HOURS|EMERGENCY', line):
-            continue
-
         # Lines we don't recognize
         stripped = line.strip()
         if stripped and header_done:
@@ -885,11 +1118,20 @@ def parse(pdf_path: str) -> dict:
             # Skip repeated address lines
             if stripped in data["mailing_address"]:
                 continue
+            # A bare label with nothing after it (e.g. "AIRLINE
+            # CONFIRMATION:" where the source just left the value blank)
+            # carries no actual content — nothing was lost by not capturing
+            # it, so it shouldn't count as an unrecognized/unknown-content
+            # line.
+            if re.match(r'^[A-Z0-9 /\-]+:$', stripped):
+                continue
             data["unrecognized"].append(f"L{line_num}: {stripped}")
 
     # ── Flush pending items ───────────────────────────────────
     if current_flight:
         data["flights"].append(current_flight)
+    if current_car:
+        data["cars"].append(current_car)
     if current_hotel:
         data["hotels"].append(current_hotel)
     if current_cruise and current_cruise["details"]:

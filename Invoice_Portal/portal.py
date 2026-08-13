@@ -13,6 +13,19 @@ import math
 import tkinter as tk
 from tkinter import messagebox
 
+# Pull the latest parser/generator/airport logic from GitHub before
+# anything else runs, so a fix takes effect without a new .exe. Must run
+# before InvoicePortal is created — everything downstream (invoice
+# processing, the airport screen) imports those modules lazily, inside
+# method bodies, the first time each screen is actually opened, so this
+# just needs to win the race to be first.
+try:
+    import updater
+    updater.sync()
+except Exception as e:
+    # Never let an update-check problem stop the app from opening at all.
+    print(f"[updater] Skipped ({e}) — using bundled files.")
+
 try:
     from PIL import Image, ImageTk, ImageDraw
 except ImportError:
@@ -69,22 +82,45 @@ def _make_hotel_icon(size=96) -> Image.Image:
 
 
 def _make_airport_icon(size=96) -> Image.Image:
-    """Simple airplane-in-flight glyph for the Airport Database card."""
+    """Jet silhouette for the Airport Database card, matching the solid
+    navy-silhouette + orange-accent style of the customer (star badge)
+    and hotel (window grid) icons."""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     s = size
-    cx, cy = s * 0.5, s * 0.52
-    # fuselage
-    d.line([(cx - s*0.34, cy + s*0.14), (cx + s*0.34, cy - s*0.14)],
-           fill="#2c3e50", width=int(s*0.07))
-    # wings
-    d.line([(cx - s*0.06, cy - s*0.02), (cx - s*0.30, cy - s*0.28)],
-           fill="#2c3e50", width=int(s*0.05))
-    d.line([(cx + s*0.10, cy - s*0.18), (cx + s*0.30, cy - s*0.02)],
-           fill="#2c3e50", width=int(s*0.05))
-    # tail fin accent
-    d.line([(cx - s*0.30, cy + s*0.16), (cx - s*0.40, cy + s*0.30)],
-           fill="#e67e22", width=int(s*0.05))
+    cx = s * 0.5
+
+    # Main swept wings (drawn first so the fuselage overlaps cleanly)
+    d.polygon([
+        (cx - s*0.06, s*0.40), (cx - s*0.46, s*0.74),
+        (cx - s*0.46, s*0.84), (cx - s*0.045, s*0.56),
+    ], fill="#2c3e50")
+    d.polygon([
+        (cx + s*0.06, s*0.40), (cx + s*0.46, s*0.74),
+        (cx + s*0.46, s*0.84), (cx + s*0.045, s*0.56),
+    ], fill="#2c3e50")
+
+    # Tail stabilizers
+    d.polygon([
+        (cx - s*0.035, s*0.72), (cx - s*0.24, s*0.90),
+        (cx - s*0.24, s*0.96), (cx - s*0.03, s*0.80),
+    ], fill="#2c3e50")
+    d.polygon([
+        (cx + s*0.035, s*0.72), (cx + s*0.24, s*0.90),
+        (cx + s*0.24, s*0.96), (cx + s*0.03, s*0.80),
+    ], fill="#2c3e50")
+
+    # Fuselage: nose at top, tapering to tail
+    fuselage = [
+        (cx, s*0.05), (cx + s*0.075, s*0.24), (cx + s*0.08, s*0.64),
+        (cx + s*0.04, s*0.84), (cx, s*0.90), (cx - s*0.04, s*0.84),
+        (cx - s*0.08, s*0.64), (cx - s*0.075, s*0.24),
+    ]
+    d.polygon(fuselage, fill="#2c3e50")
+
+    # Orange accent: cockpit window
+    d.ellipse([cx - s*0.045, s*0.15, cx + s*0.045, s*0.28], fill="#e67e22")
+
     return img
 
 

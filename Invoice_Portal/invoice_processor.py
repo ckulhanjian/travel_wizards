@@ -316,6 +316,10 @@ class PDFRenamerGUI:
             if not os.path.exists(target_path):
                 os.makedirs(target_path)
                 self.log(f"Created directory: {target_path}")
+            unknown_path = os.path.join(source_path, "unknown_type")
+            if not os.path.exists(unknown_path):
+                os.makedirs(unknown_path)
+                self.log(f"Created directory: {unknown_path}")
             pdf_files = [f for f in os.listdir(source_path)
                          if f.lower().endswith('.pdf')
                          and os.path.isfile(os.path.join(source_path, f))]
@@ -324,9 +328,10 @@ class PDFRenamerGUI:
                 self.process_btn.config(state="normal", text="▶  PROCESS INVOICES", bg="#e0e0e0")
                 return
             self.log(f"Found {len(pdf_files)} PDF file(s)")
-            successful = failed = 0
+            successful = failed = unknown_variant = airports_added = 0
             for i, file in enumerate(pdf_files, 1):
                 self.log(f"\n[{i}/{len(pdf_files)}] Processing: {file}")
+                data = None
                 try:
                     src  = os.path.join(source_path, file)
                     dest = os.path.join(target_path, file)
@@ -388,9 +393,11 @@ class PDFRenamerGUI:
                                     r = prompt_and_save(c, parent=self.root, source_pdf=src)
                                     result_q.put(r)
                                 self.root.after(0, _do_prompt)
-                                display = result_q.get()
+                                display, added_new = result_q.get()
+                                if added_new:
+                                    airports_added += 1
                                 self.log(f"    → {city} = {display}")
-                            self.log("  ✓ Airport(s) added to lookup")
+                            self.log("  ✓ Airport(s) resolved")
 
                         generate_invoice_pdf(data, dest)
                         self.log("  ✓ Reformatted to new layout")
@@ -421,17 +428,43 @@ class PDFRenamerGUI:
 
                         self.log(f"  ✓ Renamed to: {new_name}")
                         self.processed_files.append((src, new_path))
-                        successful += 1
+
+                        # A file can still get a generated invoice out the
+                        # other end even when the parser hit lines it
+                        # couldn't confidently categorize (see state_parser's
+                        # "unrecognized" list) — that's not a hard failure,
+                        # but it shouldn't be silently counted as a clean
+                        # success either. Flag it: save an untouched copy of
+                        # the original PDF in unknown_type/ for a human to
+                        # check, and count it separately in the summary.
+                        if data and data.get("unrecognized"):
+                            try:
+                                shutil.copy2(src, os.path.join(unknown_path, file))
+                                self.log(f"  ⚠ {len(data['unrecognized'])} unrecognized line(s) — "
+                                        f"raw copy saved to unknown_type/{file} for review")
+                            except Exception as e:
+                                self.log(f"  ⚠ Could not save raw copy to unknown_type: {e}")
+                            unknown_variant += 1
+                        else:
+                            successful += 1
                     else:
                         self.log(f"  ✗ Could not extract: invoice_no={invoice_no} last_name={last_name}")
                         failed += 1
                 except Exception as e:
                     self.log(f"  ✗ Error: {e}")
                     failed += 1
-            self.log(f"\n{'='*50}\nSUMMARY:\n  Successfully processed : {successful}\n  Failed : {failed}")
-            if successful > 0:
+            self.log(f"\n{'='*50}\nSUMMARY:"
+                     f"\n  Processed correctly : {successful}"
+                     f"\n  Problems             : {failed}"
+                     f"\n  Unknown variants     : {unknown_variant}"
+                     f"\n  Airports Added       : {airports_added}")
+            if successful > 0 or unknown_variant > 0:
                 messagebox.showinfo("Complete",
-                                    f"Processing complete!\n✓ {successful} file(s)\n✗ {failed} failed")
+                                    f"Processing complete!\n"
+                                    f"✓ {successful} processed correctly\n"
+                                    f"✗ {failed} problem(s)\n"
+                                    f"? {unknown_variant} unknown variant(s)\n"
+                                    f"✈ Airports Added: {airports_added}")
                 # Show review button
                 self.log(f"\n📋 Click 'Review' to compare original vs processed side by side.")
                 self._show_review_button()
@@ -482,5 +515,12 @@ class PDFRenamerGUI:
 
 
 if __name__ == "__main__":
+    # Same safety net as invoice_portal.py, for the case where this screen
+    # is launched directly rather than through the portal.
+    try:
+        import updater
+        updater.sync()
+    except Exception as e:
+        print(f"[updater] Skipped ({e}) — using bundled files.")
     app = PDFRenamerGUI()
     app.run()
