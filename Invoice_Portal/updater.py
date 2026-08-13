@@ -141,19 +141,27 @@ def _seed_cache_from_bundled(cache_dir: str, filenames: list):
     """First-ever run (or first run after a cache wipe): if a file isn't
     in the cache yet, seed it from whatever's bundled alongside the exe,
     so there's always a working copy even if this machine has never had
-    internet access at launch time."""
-    for name in filenames:
-        cached = os.path.join(cache_dir, name)
+    internet access at launch time.
+
+    filenames may be plain names ("state_parser.py") or GitHub paths that
+    include a subfolder ("Invoice_Portal/state_parser.py", if that's where
+    the repo actually keeps them). Either way, the LOCAL copy — both the
+    bundled fallback next to the exe and the cached copy — always uses
+    just the basename, since that's what has to sit directly in a folder
+    on sys.path for `import state_parser` to work."""
+    for entry in filenames:
+        local_name = os.path.basename(entry)
+        cached = os.path.join(cache_dir, local_name)
         if os.path.exists(cached):
             continue
-        bundled = os.path.join(_app_dir(), name)
+        bundled = os.path.join(_app_dir(), local_name)
         if os.path.exists(bundled):
             try:
                 with open(bundled, "rb") as src, open(cached, "wb") as dst:
                     dst.write(src.read())
-                _log(f"Seeded {name} into cache from bundled copy.")
+                _log(f"Seeded {local_name} into cache from bundled copy.")
             except OSError as e:
-                _log(f"Could not seed {name} from bundled copy: {e}")
+                _log(f"Could not seed {local_name} from bundled copy: {e}")
 
 
 def _fetch_remote_file(owner: str, repo: str, branch: str, path: str, token: str, timeout=8) -> bytes:
@@ -217,14 +225,18 @@ def sync(quiet: bool = False) -> bool:
 
     updated = []
     failed = []
-    for name in filenames:
+    for entry in filenames:
+        # entry is the path GitHub actually needs (may include a subfolder,
+        # e.g. "Invoice_Portal/state_parser.py") — but the file always
+        # gets cached and imported under just its basename.
+        local_name = os.path.basename(entry)
         try:
-            remote_bytes = _fetch_remote_file(owner, repo, branch, name, token)
+            remote_bytes = _fetch_remote_file(owner, repo, branch, entry, token)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
-            failed.append((name, str(e)))
+            failed.append((local_name, str(e)))
             continue
 
-        cached_path = os.path.join(cache_dir, name)
+        cached_path = os.path.join(cache_dir, local_name)
         local_bytes = b""
         if os.path.exists(cached_path):
             with open(cached_path, "rb") as f:
@@ -235,7 +247,7 @@ def sync(quiet: bool = False) -> bool:
             with open(tmp_path, "wb") as f:
                 f.write(remote_bytes)
             os.replace(tmp_path, cached_path)
-            updated.append(name)
+            updated.append(local_name)
 
     if not quiet:
         if updated:
