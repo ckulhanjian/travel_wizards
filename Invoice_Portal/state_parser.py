@@ -40,6 +40,7 @@ SKIP_PATTERNS = [
     r'^\s*BFFF\s*$',                    # booking reference
     r'AIR MILEAGE:',                    # mileage (user said skip)
     r'MILEAGE MEMBERSHIP:',            # mileage membership
+    r'^\s*[A-Z]{2}\s+\d{6,}\s*$',       # mileage membership continuation line (2nd+ passenger, no label)
     r'^\s*PAGE:\s*\d+',                 # page numbers
     r'SF-\d+\s+USD',                    # service fee payment ref line
     r'PLEASE NOTE',                     # generic notice prefix
@@ -190,6 +191,20 @@ def parse(pdf_path: str) -> dict:
                 state = CRUISE
                 current_cruise = {"date_raw": current_date, "day_name": current_day,
                                   "details": {}}
+            continue
+
+        # Segment-type keyword on its OWN line right after a date, rather
+        # than appended to the date line itself, e.g.:
+        #   "17 JUL 26 - FRIDAY"
+        #   "TRANSFERS"
+        # instead of "17 JUL 26 - FRIDAY TOUR". Without this, the entire
+        # block would never enter TOUR state at all and everything in it
+        # — vendor, cost, payment, all of it — would be lost outright.
+        if line.strip().upper() in ("TRANSFERS", "TOUR", "OTHER ARRANGEMENTS") and state != TOUR:
+            state = TOUR
+            current_tour = {"date_raw": current_date, "day_name": current_day,
+                            "vendor": None, "amount": None, "confirmation": None,
+                            "details": []}
             continue
 
         # Cruise arrangements
@@ -636,6 +651,17 @@ def parse(pdf_path: str) -> dict:
                 current_hotel["rate_currency"] = addr_rate_alt.group(3)
                 continue
 
+            # Same, but with no currency code given at all, e.g.
+            # "JUAN REUSCH 445 RATE- 75.33 PER NIGHT" — currency deliberately
+            # left blank rather than guessed, since the invoice genuinely
+            # doesn't say (and the local currency at a foreign property may
+            # not be USD).
+            addr_rate_nocur = re.search(r'^\s+(.+?)\s+RATE-\s*([\d.]+)\s+PER NIGHT', line)
+            if addr_rate_nocur:
+                current_hotel["address"] = addr_rate_nocur.group(1).strip()
+                current_hotel["rate_amount"] = addr_rate_nocur.group(2)
+                continue
+
             # Simple address line (hotels without chain prefix)
             if re.match(r'^\s+\d+\s+', line) and not current_hotel.get("address"):
                 current_hotel["address"] = line.strip()
@@ -969,24 +995,40 @@ def parse(pdf_path: str) -> dict:
             # starting at "JR/...", silently dropping "LIN" from the name.
             # Spacing before the ticket number varies by invoice — some use
             # column-aligned double spaces, others just one — so \s+ (not
-            # \s{2,}) is used here specifically.
-            tkt = re.search(r'([A-Z]+(?:\s[A-Z]+)?/[A-Z ]+?)\s+(\d{10,}(?:-\d+)?)\s*(\S+\s*\S*)\s+USD\s+([\d.]+)', line)
+            # \s{2,}) is used here specifically. The payment-method group is
+            # genuinely optional (some invoices go straight from ticket
+            # number to "USD" with no method at all) — making it required
+            # used to force the regex to steal the ticket number's last
+            # digit to satisfy it, silently truncating real ticket numbers
+            # instead of just leaving the method blank.
+            tkt = re.search(r'([A-Z]+(?:\s[A-Z]+)?/[A-Z ]+?)\s+(\d{10,}(?:-\d+)?)\s*(?:(\S+\s*\S*?)\s+)?USD\s+([\d.]+)', line)
             if tkt:
                 data["tickets"].append({
                     "passenger": tkt.group(1).strip(),
                     "ticket_number": tkt.group(2),
-                    "payment_method": tkt.group(3).strip(),
+                    "payment_method": (tkt.group(3) or "").strip(),
                     "amount_usd": tkt.group(4),
                 })
                 continue
 
             # ITIN: AIR TICKET/S  7401640949  AX CARD  3898.44
-            itkt = re.search(r'AIR TICKET/S\s+(\d+)\s+(\S+\s*\S*)\s+([\d.]+)', line)
+            # Ticket number may have a dash-suffix for multi-ticket issuance
+            # (e.g. "7401789463-464"), same as the passenger-ticket format.
+            # Payment method is genuinely optional here — some invoices go
+            # straight from ticket number to the amount with nothing between
+            # them at all. There's no "USD" keyword in this format to anchor
+            # on (unlike the passenger-ticket regex), so instead the method
+            # is matched as letters/spaces only and the amount is anchored
+            # to end-of-line — a bare amount with no method preceding it
+            # correctly leaves the method group as None rather than either
+            # failing to match at all (losing the ticket) or misreading the
+            # amount itself as the method.
+            itkt = re.search(r'AIR TICKET/S\s+(\d+(?:-\d+)?)\s+(?:([A-Z][A-Z ]*?)\s+)?([\d.]+)\s*$', line)
             if itkt:
                 data["tickets"].append({
                     "passenger": "",
                     "ticket_number": itkt.group(1),
-                    "payment_method": itkt.group(2).strip(),
+                    "payment_method": (itkt.group(2) or "").strip(),
                     "amount_usd": itkt.group(3),
                 })
                 continue
@@ -1007,18 +1049,27 @@ def parse(pdf_path: str) -> dict:
                 # fall through to FINANCIAL processing below
 
         if state == FINANCIAL:
+            # A trailing "-" after the amount (e.g. "SUB TOTAL 366.16-")
+            # means a credit/refund, not a positive balance — capturing it
+            # as an optional group and prefixing the stored value with "-"
+            # when present preserves that distinction instead of silently
+            # discarding the sign and showing an amount owed AS a refund
+            # (or vice versa).
             for pattern, key in [
-                (r'AIR FARE USD\s+([\d.]+)', "air_fare"),
-                (r'TAX AND CARRIER FEES USD\s+([\d.]+)', "tax_and_fees"),
-                (r'TTL USD\s+([\d.]+)', "total"),
-                (r'SUB TOTAL\s+(?:USD\s+)?([\d.]+)', "sub_total"),
-                (r'CREDIT CARD PAYMENT\s+USD\s+([\d.]+)', "credit_card_payment"),
-                (r'AMOUNT DUE\s+(?:USD\s+)?([\d.]+)', "amount_due"),
-                (r'TOTAL AMOUNT\s+([\d.]+)', "amount_due"),
+                (r'AIR FARE USD\s+([\d.]+)(-)?', "air_fare"),
+                (r'TAX AND CARRIER FEES USD\s+([\d.]+)(-)?', "tax_and_fees"),
+                (r'TTL USD\s+([\d.]+)(-)?', "total"),
+                (r'SUB TOTAL\s+(?:USD\s+)?([\d.]+)(-)?', "sub_total"),
+                (r'CREDIT CARD PAYMENT\s+USD\s+([\d.]+)(-)?', "credit_card_payment"),
+                (r'AMOUNT DUE\s+(?:USD\s+)?([\d.]+)(-)?', "amount_due"),
+                (r'TOTAL AMOUNT\s+([\d.]+)(-)?', "amount_due"),
             ]:
                 m = re.search(pattern, line)
                 if m:
-                    data["financial"][key] = m.group(1)
+                    value = m.group(1)
+                    if m.group(2):
+                        value = "-" + value
+                    data["financial"][key] = value
                     break
             # Fare per person (ITIN)
             fare = re.search(r'FARE\.+\s*([\d.]+)', line)

@@ -336,7 +336,12 @@ def generate_invoice_pdf(data: dict, output_path: str):
             if contacts: left += " | ".join(contacts)
 
             right = ""
-            if h.get("nights"): right += f'{h["nights"]} Night(s) | {h.get("status","")}<br/>'
+            if h.get("nights"):
+                status_txt = h.get("status") or ""
+                right += f'{h["nights"]} Night(s)'
+                if status_txt:
+                    right += f' | {status_txt}'
+                right += '<br/>'
             if h.get("confirmation"): right += f'<b>Confirmation:</b> {h["confirmation"]}<br/>'
             if h.get("guarantee"): right += f'<b>Guarantee:</b> {_tc(h["guarantee"])}<br/>'
             if h.get("rate_currency") and h.get("rate_amount"):
@@ -535,6 +540,23 @@ def generate_invoice_pdf(data: dict, output_path: str):
             val += f'  ({date_str})'
         fin_rows.append(["Payment:", val])
 
+    def _format_balance_or_credit(raw_str):
+        """A raw amount string may have a leading '-' (a credit/refund due
+        BACK to the customer, from a trailing '-' in the source text like
+        "SUB TOTAL 366.16-"). Distinguishes exactly-zero (paid in full),
+        positive (still owed), and negative (refund due) rather than
+        rendering a bare negative dollar figure, which reads as confusing
+        at best on a customer-facing invoice."""
+        try:
+            v = float(raw_str)
+        except (ValueError, TypeError):
+            return f'USD {raw_str}'
+        if v < 0:
+            return f'Credit: USD {abs(v):,.2f}'
+        if v == 0:
+            return "PAID IN FULL"
+        return f'USD {v:,.2f}'
+
     if balance_due is not None:
         paid_in_full = balance_due <= 0
         if paid_in_full:
@@ -545,18 +567,14 @@ def generate_invoice_pdf(data: dict, output_path: str):
                 val += f'  (Due {_fmt_short_date(balance_due_date, invoice_month, invoice_year)})'
             fin_rows.append(["Sub Total:", val])
     elif fin.get("sub_total"):
-        fin_rows.append(["Sub Total:", f'USD {fin["sub_total"]}'])
+        fin_rows.append(["Sub Total:", _format_balance_or_credit(fin["sub_total"])])
 
     if fin.get("credit_card_payment"): fin_rows.append(["Credit Card Payment:", f'USD {fin["credit_card_payment"]}'])
 
     # Only fall back to the raw AMOUNT DUE line if we didn't already compute a
     # balance above — otherwise it would just repeat the Sub Total we just showed.
     if balance_due is None and fin.get("amount_due") is not None:
-        try:
-            paid_in_full = float(fin["amount_due"]) <= 0
-        except (ValueError, TypeError):
-            paid_in_full = False
-        fin_rows.append(["Amount Due:", "PAID IN FULL" if paid_in_full else f'USD {fin["amount_due"]}'])
+        fin_rows.append(["Amount Due:", _format_balance_or_credit(fin["amount_due"])])
 
     if fin_rows:
         tbl_rows = []
