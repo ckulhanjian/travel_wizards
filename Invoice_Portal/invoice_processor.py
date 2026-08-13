@@ -2,6 +2,7 @@
 """
 PDF Invoice Renamer - Travel Wizards
 """
+print("Testing - Opening invoice_processor.py (1)")
 
 import os
 import sys
