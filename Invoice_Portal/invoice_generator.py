@@ -48,8 +48,8 @@ def _styles():
     s["normal"]     = ParagraphStyle("normal", fontName="Helvetica", fontSize=9.5, textColor=CLR_DARK, leading=12)
     s["bold"]       = ParagraphStyle("bold", fontName="Helvetica-Bold", fontSize=9.5, textColor=CLR_DARK, leading=12)
     s["detail"]     = ParagraphStyle("detail", fontName="Helvetica", fontSize=9.5, textColor=CLR_GREY, leading=12)
-    s["contact"]        = ParagraphStyle("contact", fontName="Helvetica", fontSize=13, textColor=CLR_BLACK, leading=15)
-    s["contact_right"]  = ParagraphStyle("contact_right", fontName="Helvetica", fontSize=13, textColor=CLR_BLACK, leading=15, alignment=TA_RIGHT)
+    s["contact"]        = ParagraphStyle("contact", fontName="Helvetica", fontSize=10, textColor=CLR_BLACK, leading=12)
+    s["contact_right"]  = ParagraphStyle("contact_right", fontName="Helvetica", fontSize=10, textColor=CLR_BLACK, leading=12, alignment=TA_RIGHT)
     s["detail_b"]   = ParagraphStyle("detail_b", fontName="Helvetica-Bold", fontSize=9.5, textColor=CLR_GREY, leading=12)
     s["sub_label"]  = ParagraphStyle("sub_label", fontName="Helvetica-Bold", fontSize=8.5, textColor=CLR_BLUE_LT, leading=11, spaceBefore=6)
     s["sub_text"]   = ParagraphStyle("sub_text", fontName="Helvetica", fontSize=8.5, textColor=CLR_GREY, leading=11)
@@ -396,25 +396,23 @@ def generate_invoice_pdf(data: dict, output_path: str):
             story.append(KeepTogether(elems))
 
     # ── Tours ─────────────────────────────────────────────────
+    # Deliberately minimal by design: tour formats vary too much
+    # (TIPITIN vendor markers, ITIN dot-filled totals, bare car-rental
+    # text, FARE breakdowns, agency fees...) to force into a consistent
+    # set of labeled fields without either fighting a new variant every
+    # few invoices or quietly dropping content. Every tour gets the same
+    # plain "Tour" bar — no title, no vendor line — followed by exactly
+    # the lines that appeared on the original invoice, in order.
     if data.get("tours"):
         for tr in data["tours"]:
             elems = []
-            vendor = tr.get("vendor") or "Tour"
-            date = _fmt_date(tr.get("date_raw"), tr.get("day_name"))
-
-            header_text = _tc(tr["type"]) if tr.get("type") else "Tour / Transportation"
-            story.append(_bar(header_text, styles))
+            story.append(_bar("Tour", styles))
             story.append(Spacer(1, 6))
 
-            elems.append(Paragraph(f'{_tc(vendor)}', styles["route"]))
-
-            parts = [f'<b>Date:</b> {date}']
-            if tr.get("amount"): parts.append(f'<b>Amount:</b> USD {tr["amount"]}')
-            if tr.get("confirmation"): parts.append(f'<b>Confirmation:</b> {tr["confirmation"]}')
-            elems.append(Paragraph("  |  ".join(parts), styles["detail"]))
-
-            for detail in tr.get("details", []):
-                elems.append(Paragraph(detail, styles["sub_text"]))
+            raw_lines = tr.get("raw_lines") or tr.get("details") or []
+            for line in raw_lines:
+                if line:
+                    elems.append(Paragraph(line, styles["sub_text"]))
 
             elems.append(Spacer(1, 8))
             story.append(KeepTogether(elems))

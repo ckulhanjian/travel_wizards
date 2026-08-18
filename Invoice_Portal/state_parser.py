@@ -55,8 +55,17 @@ def _is_date_line(line):
     return m.groups() if m else None
 
 def _is_tipitin_airline(line):
-    """Match: '  UNITED AIRLINES INC.      362   BUS/ FIRST XCPTNS'"""
-    m = re.match(r'\s+(\S.+?(?:INC\.|AIRLINES|AIR LINES).*?)\s+(\d+)\s+(.+?)$', line)
+    """Match: '  UNITED AIRLINES INC.      362   BUS/ FIRST XCPTNS'
+       or:    '  DEUTSCHE LUFTHANSA AG    4143   BUSINESS PREMIUM'
+       or:    '  COPA 140 PREMIUM ECONOMY'
+    Previously required the airline name to literally contain "INC.",
+    "AIRLINES", or "AIR LINES" — invisible to any airline using a
+    different corporate-suffix convention (e.g. German "AG"), which
+    silently dropped the entire flight and everything under it. Matched
+    structurally instead: an airline-name-shaped run of text, then a
+    2-4 digit flight number, then a class description — no longer
+    dependent on guessing every possible corporate suffix in advance."""
+    m = re.match(r'\s+([A-Z][A-Za-z0-9&\.\-\' ]*?)\s+(\d{2,4})\s+([A-Z/].+?)$', line)
     if m and not any(kw in line for kw in ['HOTEL', 'RESORT', 'GUARD', 'INSURANCE']):
         return m.groups()
     return None
@@ -178,12 +187,12 @@ def parse(pdf_path: str) -> dict:
                 state = TOUR
                 current_tour = {"date_raw": current_date, "day_name": current_day,
                                 "vendor": None, "amount": None, "confirmation": None,
-                                "details": []}
+                                "details": [], "raw_lines": [line.strip()]}
             elif "OTHER ARRANGEMENTS" in rest:
                 state = TOUR
                 current_tour = {"date_raw": current_date, "day_name": current_day,
                                 "vendor": None, "amount": None, "confirmation": None,
-                                "details": []}
+                                "details": [], "raw_lines": [line.strip()]}
             elif "CRUISE" in rest:
                 # e.g. "23 OCT 26 - FRIDAY CRUISE CRUISE" — some invoices
                 # trigger a cruise this way instead of a "CRUISE
@@ -204,7 +213,7 @@ def parse(pdf_path: str) -> dict:
             state = TOUR
             current_tour = {"date_raw": current_date, "day_name": current_day,
                             "vendor": None, "amount": None, "confirmation": None,
-                            "details": []}
+                            "details": [], "raw_lines": [line.strip()]}
             continue
 
         # Cruise arrangements
@@ -392,7 +401,7 @@ def parse(pdf_path: str) -> dict:
                 continue
 
             # ITIN header: SALES PERSON line
-            sp = re.match(r'SALES PERSON:\s*(\S+)\s+ITIN/INVOICE NO\.\s+(\d+).*?DATE:(.+?)$', line)
+            sp = re.match(r'SALES PERSON:\s*(\S+)\s+ITIN\s*/\s*INVOICE NO\.?\s+(\d+).*?DATE:(.+?)$', line)
             if sp:
                 data["booking"]["sales_person"] = sp.group(1)
                 data["booking"]["itin_no"] = sp.group(2)
@@ -837,6 +846,18 @@ def parse(pdf_path: str) -> dict:
                 continue
 
         elif state == TOUR and current_tour:
+            # Every line seen inside a tour block is kept verbatim, in
+            # order — tour formats vary too wildly (TIPITIN vendor markers,
+            # ITIN dot-filled totals, bare car-rental descriptions, FARE
+            # breakdowns, agency fees...) to reliably restructure into a
+            # fixed set of fields without either fighting a new variant
+            # every few invoices or quietly dropping content. The
+            # structured fields below are still extracted too — they feed
+            # the bottom Financial summary that aggregates totals across
+            # every tour/hotel/cruise — but the tour itself renders from
+            # this raw list, not from those fields.
+            current_tour.setdefault("raw_lines", []).append(line.strip())
+
             # Tour vendor line: **POSITANO CAR SERVICE**/AMT-550.00/CF-GAETA
             vendor = re.search(r'\*\*(.+?)\*\*', line)
             if vendor:

@@ -84,7 +84,15 @@ def _data_dir() -> str:
 
 
 def _config_path() -> str:
-    return os.path.join(_app_dir(), "update_config.json")
+    # Deliberately _data_dir(), not _app_dir(): _app_dir() resolves
+    # differently depending on how the app happens to be launched (a raw
+    # PyInstaller binary, the actual .app bundle on macOS, or a plain dev
+    # `python portal.py` run all land in different folders) — which meant
+    # this file could silently "reset" to a fresh placeholder just from
+    # switching how you opened the app, with no clue where the one you'd
+    # already edited had gone. _data_dir() is the same folder every time,
+    # on every platform, regardless of launch method.
+    return os.path.join(_data_dir(), "update_config.json")
 
 
 def _cache_dir() -> str:
@@ -182,7 +190,7 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def sync(quiet: bool = False) -> bool:
+def sync(quiet: bool = False) -> dict:
     """
     Checks GitHub for newer versions of every file in the config's file
     list, updates the local cache for any that changed, and puts that
@@ -196,11 +204,16 @@ def sync(quiet: bool = False) -> bool:
     happened, and never raises out to the caller. A network hiccup should
     never be able to stop the app from opening.
 
-    Returns True if the app should proceed normally (cache dir is usable
-    either way — this basically always returns True; it's here for
-    callers that want to react to a hard failure, though there isn't
-    currently a case where sync leaves the app with no usable files at
-    all, short of a broken installation missing the bundled fallbacks).
+    Returns a dict describing what happened, so a GUI can show something
+    more useful than nothing at all (this app has no console window in a
+    real build — --windowed builds intentionally suppress one, so print()
+    statements and this function's own log lines are otherwise invisible
+    to the person actually using it):
+        {"status": "updated" | "up_to_date" | "disabled" | "unconfigured"
+                    | "offline",
+         "updated_files": [...], "failed_files": [(name, error), ...]}
+    Always dict-shaped (never None), so it's truthy either way for any
+    caller that only checks "did this blow up" rather than inspecting it.
     """
     cfg = load_config()
     cache_dir = _cache_dir()
@@ -212,7 +225,7 @@ def sync(quiet: bool = False) -> bool:
         if not quiet:
             _log("Auto-update disabled in config — using cached/bundled files as-is.")
         sys.path.insert(0, cache_dir)
-        return True
+        return {"status": "disabled", "updated_files": [], "failed_files": []}
 
     owner, repo, branch, token = cfg["owner"], cfg["repo"], cfg["branch"], cfg["token"]
     if "YOUR_GITHUB" in owner or "PASTE_YOUR" in token:
@@ -221,7 +234,7 @@ def sync(quiet: bool = False) -> bool:
                  f"edit {_config_path()} to enable auto-update. "
                  "Using cached/bundled files for now.")
         sys.path.insert(0, cache_dir)
-        return True
+        return {"status": "unconfigured", "updated_files": [], "failed_files": []}
 
     updated = []
     failed = []
@@ -259,11 +272,19 @@ def sync(quiet: bool = False) -> bool:
             _log("Up to date — no changes.")
 
     sys.path.insert(0, cache_dir)
-    return True
+
+    if failed and len(failed) == len(filenames):
+        status = "offline"
+    elif updated:
+        status = "updated"
+    else:
+        status = "up_to_date"
+    return {"status": status, "updated_files": updated, "failed_files": failed}
 
 
 if __name__ == "__main__":
-    sync()
+    result = sync()
+    print(result)
     print(f"\nCache directory: {_cache_dir()}")
     print(f"Config file:      {_config_path()}")
     print(f"Log file:         {_log_path()}")

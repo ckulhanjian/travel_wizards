@@ -19,12 +19,14 @@ from tkinter import messagebox
 # processing, the airport screen) imports those modules lazily, inside
 # method bodies, the first time each screen is actually opened, so this
 # just needs to win the race to be first.
+_UPDATE_RESULT = None
 try:
     import updater
-    updater.sync()
+    _UPDATE_RESULT = updater.sync()
 except Exception as e:
     # Never let an update-check problem stop the app from opening at all.
     print(f"[updater] Skipped ({e}) — using bundled files.")
+    _UPDATE_RESULT = {"status": "error", "updated_files": [], "failed_files": [("updater", str(e))]}
 
 try:
     from PIL import Image, ImageTk, ImageDraw
@@ -195,6 +197,30 @@ class PortalCard(tk.Frame):
 # ---------------------------------------------------------------------------
 # Portal
 # ---------------------------------------------------------------------------
+def _update_status_line():
+    """Turns the module-level _UPDATE_RESULT (from the sync() call at
+    startup) into a short status line + color for display on the portal.
+    Returns (None, None) if there's nothing worth showing."""
+    r = _UPDATE_RESULT
+    if not r:
+        return None, None
+    status = r.get("status")
+    if status == "updated":
+        names = ", ".join(r["updated_files"])
+        return f"✓ Updated: {names}", "#2e8b46"
+    if status == "up_to_date":
+        return "✓ Up to date", "#999999"
+    if status == "offline":
+        return "⚠ Couldn't reach GitHub — using last saved version", "#cc8800"
+    if status == "unconfigured":
+        return "⚠ Auto-update not set up yet (see update_config.json)", "#cc8800"
+    if status == "disabled":
+        return None, None
+    if status == "error":
+        return "⚠ Auto-update check failed — using bundled files", "#cc8800"
+    return None, None
+
+
 class InvoicePortal:
     BG = "#fafafa"
 
@@ -241,8 +267,20 @@ class InvoicePortal:
                       text="Icons by Flaticon  ·  flaticon.com",
                       font=("Arial", 7), bg=self.BG, fg="#bbbbbb",
                       cursor="hand2")
-        cr.pack(side="bottom", pady=8)
+        cr.pack(side="bottom", pady=(0, 2))
         cr.bind("<Button-1>", lambda e: _open_url("https://www.flaticon.com"))
+
+        # Auto-update status — the only visibility this has in a real
+        # --windowed build, which has no console for print()/log output to
+        # go to. Deliberately quiet/small: a normal "up to date" run
+        # shouldn't demand attention, but a real problem (offline, bad
+        # token, unconfigured) should be visible without having to go dig
+        # through update_log.txt to find out why something didn't update.
+        status_text, status_color = _update_status_line()
+        if status_text:
+            st = tk.Label(self.main_frame, text=status_text,
+                          font=("Arial", 8), bg=self.BG, fg=status_color)
+            st.pack(side="bottom", pady=(0, 6))
 
     def _open_pdf(self):
         try:

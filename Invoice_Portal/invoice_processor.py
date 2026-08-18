@@ -2,7 +2,6 @@
 """
 PDF Invoice Renamer - Travel Wizards
 """
-print("Testing - Opening invoice_processor.py (1)")
 
 import os
 import sys
@@ -56,9 +55,9 @@ def extract_fields(text, fmt: str, log_fn=None):
             log_fn(msg)
 
     if fmt == FOLDER_ITIN:
-        inv   = re.search(r'ITIN/INVOICE NO\.\s+(\d+)', text)
+        inv   = re.search(r'ITIN\s*/\s*INVOICE NO\.?\s+(\d+)', text)
         agent = re.search(r'SALES PERSON:\s*(\S+)', text)
-        last  = re.search(r'FOR:\s+([A-Z]+)/', text)
+        last  = re.search(r'FOR:\s+([A-Z]+(?:\s[A-Z]+)?)/', text)
         invoice_no     = inv.group(1)        if inv   else None
         agent_initials = agent.group(1)[-2:] if agent else None
         last_name      = last.group(1)       if last  else None
@@ -313,14 +312,14 @@ class PDFRenamerGUI:
     def process_pdfs(self):
         try:
             source_path = self.source_folder.get()
-            target_path = os.path.join(source_path, "processed_invoices")
-            if not os.path.exists(target_path):
-                os.makedirs(target_path)
-                self.log(f"Created directory: {target_path}")
-            unknown_path = os.path.join(source_path, "unknown_type")
-            if not os.path.exists(unknown_path):
-                os.makedirs(unknown_path)
-                self.log(f"Created directory: {unknown_path}")
+            styled_path  = os.path.join(source_path, "processed_invoices_styled")
+            plain_path   = os.path.join(source_path, "processed_invoices_plain")
+            errored_path = os.path.join(source_path, "errored_invoices")
+            for p in (styled_path, plain_path, errored_path):
+                if not os.path.exists(p):
+                    os.makedirs(p)
+                    self.log(f"Created directory: {p}")
+
             pdf_files = [f for f in os.listdir(source_path)
                          if f.lower().endswith('.pdf')
                          and os.path.isfile(os.path.join(source_path, f))]
@@ -330,16 +329,14 @@ class PDFRenamerGUI:
                 return
             self.log(f"Found {len(pdf_files)} PDF file(s)")
             successful = failed = unknown_variant = airports_added = 0
+
             for i, file in enumerate(pdf_files, 1):
                 self.log(f"\n[{i}/{len(pdf_files)}] Processing: {file}")
                 data = None
+                has_problem = False
+                src = os.path.join(source_path, file)
+
                 try:
-                    src  = os.path.join(source_path, file)
-                    dest = os.path.join(target_path, file)
-                    shutil.copy2(src, dest)
-
-
-
                     # Read text from original for format detection + field extraction
                     doc  = fitz.open(src)
                     text = doc[0].get_text("text")
@@ -347,15 +344,52 @@ class PDFRenamerGUI:
 
                     fmt = detect_format(text)
                     if not fmt:
-                        self.log(f"  ✗ Could not detect format")
+                        self.log("  ✗ Could not detect format")
                         failed += 1
+                        # Still produce a plain, unbranded-but-safe copy so
+                        # there's SOMETHING to review in errored_invoices/,
+                        # even without knowing which overlay style to use.
+                        try:
+                            shutil.copy2(src, os.path.join(errored_path, file))
+                            shutil.copy2(src, os.path.join(plain_path, file))
+                        except Exception:
+                            pass
                         continue
                     self.log(f"  Format: {fmt.upper()}")
 
-                    # Extract fields for renaming (works for both formats)
                     agent, invoice_no, last_name = extract_fields(text, fmt, log_fn=self.log)
+                    if not invoice_no or not last_name:
+                        has_problem = True
 
-                    # Reformat invoice to styled PDF (both ITIN and TIPITIN)
+                    # ── PLAIN: original content, always produced ────────
+                    # This is what makes the logo/branding consistent across
+                    # every output, and what errored_invoices/ falls back to
+                    # when a full reformat isn't possible — "the old
+                    # styling": the same overlay + backside every invoice
+                    # has always gotten, just without the new layout.
+                    plain_dest = os.path.join(plain_path, file)
+                    shutil.copy2(src, plain_dest)
+                    if self.apply_overlay_and_backside(plain_dest, fmt):
+                        self.log("  ✓ Plain copy: overlay & back page applied")
+                    else:
+                        self.log("  ✗ Plain copy: overlay failed")
+
+                    if invoice_no and last_name:
+                        plain_new_name = build_filename(agent, invoice_no, last_name)
+                        plain_new_path = os.path.join(plain_path, plain_new_name)
+                        if os.path.exists(plain_new_path) and plain_new_path != plain_dest:
+                            base, ext = os.path.splitext(plain_new_name)
+                            counter = 2
+                            while os.path.exists(os.path.join(plain_path, f"{base} ({counter}){ext}")):
+                                counter += 1
+                            plain_new_name = f"{base} ({counter}){ext}"
+                            plain_new_path = os.path.join(plain_path, plain_new_name)
+                        os.rename(plain_dest, plain_new_path)
+                        plain_dest = plain_new_path
+                        self.log(f"  ✓ Plain copy renamed to: {plain_new_name}")
+
+                    # ── STYLED: the new reformatted layout ───────────────
+                    styled_ok = False
                     try:
                         from state_parser import parse as parse_invoice
                         from invoice_generator import generate_invoice_pdf
@@ -364,7 +398,6 @@ class PDFRenamerGUI:
                         self.log(f"  Parsing {file}...")
                         data = parse_invoice(src)
 
-                        # Log what was found
                         parts = []
                         if data["flights"]: parts.append(f'{len(data["flights"])} flights')
                         if data["hotels"]: parts.append(f'{len(data["hotels"])} hotels')
@@ -375,15 +408,11 @@ class PDFRenamerGUI:
                         if data["tickets"]: parts.append(f'{len(data["tickets"])} tickets')
                         self.log(f"    Parsed: {', '.join(parts)}")
 
-                        # Log validation warnings
                         for w in data.get("warnings", []):
                             self.log(f"    ⚠ {w}")
-
-                        # Log unrecognized lines
                         for u in data.get("unrecognized", []):
                             self.log(f"    ? {u}")
 
-                        # Check for unknown airports
                         unknowns = check_unknown_airports(data)
                         if unknowns:
                             self.log(f"  ? Unknown airport(s): {', '.join(unknowns)}")
@@ -400,66 +429,71 @@ class PDFRenamerGUI:
                                 self.log(f"    → {city} = {display}")
                             self.log("  ✓ Airport(s) resolved")
 
-                        generate_invoice_pdf(data, dest)
+                        styled_dest = os.path.join(styled_path, file)
+                        generate_invoice_pdf(data, styled_dest)
                         self.log("  ✓ Reformatted to new layout")
+
+                        if self.apply_overlay_and_backside(styled_dest, fmt):
+                            self.log("  ✓ Styled copy: overlay & back page applied")
+                        styled_ok = True
                     except Exception as e:
-                        self.log(f"  ✗ Reformat failed ({e}), using original")
+                        self.log(f"  ✗ Reformat failed ({e}) — plain copy is still available")
+                        has_problem = True
 
-                    # Apply overlay + back page
-                    self.log(f"  Applying overlay (format: {fmt})...")
-                    if self.apply_overlay_and_backside(dest, fmt):
-                        self.log("  ✓ Overlay & back page applied")
-                    else:
-                        self.log("  ✗ Overlay failed, continuing with rename...")
-
-                    # Rename based on extracted fields
-                    if invoice_no and last_name:
-                        new_name = build_filename(agent, invoice_no, last_name)
-                        new_path = os.path.join(target_path, new_name)
-                        # Check if target already exists (duplicate invoice)
-                        if os.path.exists(new_path):
-                            base, ext = os.path.splitext(new_name)
-                            counter = 2
-                            while os.path.exists(os.path.join(target_path, f"{base} ({counter}){ext}")):
-                                counter += 1
-                            new_name = f"{base} ({counter}){ext}"
-                            new_path = os.path.join(target_path, new_name)
-                            self.log(f"  ⚠ Duplicate name — using: {new_name}")
-                        os.rename(dest, new_path)
-
-                        self.log(f"  ✓ Renamed to: {new_name}")
-                        self.processed_files.append((src, new_path))
-
-                        # A file can still get a generated invoice out the
-                        # other end even when the parser hit lines it
-                        # couldn't confidently categorize (see state_parser's
-                        # "unrecognized" list) — that's not a hard failure,
-                        # but it shouldn't be silently counted as a clean
-                        # success either. Flag it: save an untouched copy of
-                        # the original PDF in unknown_type/ for a human to
-                        # check, and count it separately in the summary.
-                        if data and data.get("unrecognized"):
-                            try:
-                                shutil.copy2(src, os.path.join(unknown_path, file))
-                                self.log(f"  ⚠ {len(data['unrecognized'])} unrecognized line(s) — "
-                                        f"raw copy saved to unknown_type/{file} for review")
-                            except Exception as e:
-                                self.log(f"  ⚠ Could not save raw copy to unknown_type: {e}")
-                            unknown_variant += 1
+                    if styled_ok:
+                        if invoice_no and last_name:
+                            styled_new_name = build_filename(agent, invoice_no, last_name)
+                            styled_new_path = os.path.join(styled_path, styled_new_name)
+                            if os.path.exists(styled_new_path) and styled_new_path != styled_dest:
+                                base, ext = os.path.splitext(styled_new_name)
+                                counter = 2
+                                while os.path.exists(os.path.join(styled_path, f"{base} ({counter}){ext}")):
+                                    counter += 1
+                                styled_new_name = f"{base} ({counter}){ext}"
+                                styled_new_path = os.path.join(styled_path, styled_new_name)
+                            os.rename(styled_dest, styled_new_path)
+                            styled_dest = styled_new_path
+                            self.log(f"  ✓ Styled copy renamed to: {styled_new_name}")
+                            self.processed_files.append((src, styled_dest))
                         else:
-                            successful += 1
+                            self.log("  ⚠ Styled copy kept as original filename (missing invoice_no/last_name)")
+
+                    if data and data.get("unrecognized"):
+                        self.log(f"  ⚠ {len(data['unrecognized'])} unrecognized line(s)")
+                        has_problem = True
+                        unknown_variant += 1
+
+                    # ── ERRORED: a copy of whatever's in "plain", for any
+                    # file with a problem — missing rename info, a reformat
+                    # exception, or unrecognized content. Deliberately the
+                    # plain version, not the (possibly incomplete) styled
+                    # one, since it's the more reliable copy to hand a
+                    # human for review.
+                    if has_problem:
+                        try:
+                            shutil.copy2(plain_dest, os.path.join(errored_path, os.path.basename(plain_dest)))
+                            self.log(f"  ⚠ Copy saved to errored_invoices/ for review")
+                        except Exception as e:
+                            self.log(f"  ⚠ Could not save to errored_invoices: {e}")
+                        if not (data and data.get("unrecognized")):
+                            failed += 1
                     else:
-                        self.log(f"  ✗ Could not extract: invoice_no={invoice_no} last_name={last_name}")
-                        failed += 1
+                        successful += 1
+
                 except Exception as e:
                     self.log(f"  ✗ Error: {e}")
                     failed += 1
+                    try:
+                        shutil.copy2(src, os.path.join(errored_path, file))
+                    except Exception:
+                        pass
+
             self.log(f"\n{'='*50}\nSUMMARY:"
                      f"\n  Processed correctly : {successful}"
                      f"\n  Problems             : {failed}"
                      f"\n  Unknown variants     : {unknown_variant}"
                      f"\n  Airports Added       : {airports_added}")
-            if successful > 0 or unknown_variant > 0:
+            if successful > 0 or unknown_variant > 0 or failed > 0:
                 messagebox.showinfo("Complete",
                                     f"Processing complete!\n"
                                     f"✓ {successful} processed correctly\n"
